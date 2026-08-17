@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 from pathlib import Path
 import logging
+import re
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -20,41 +21,42 @@ from telethon_manager import (
     wait_for_code, 
     is_authorized,
     disconnect_session,
-    close_all
+    close_all,
+    request_code,
+    verify_code,
+    verify_2fa
 )
 
 logger = logging.getLogger(__name__)
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-# ... остальной код бота ...
-
-# Цены в звездах (Telegram Stars)
-PRICES = {
-    "100": 100,   # 100 рублей = 10 звезд
-    "300": 300,   # 300 рублей = 30 звезд
-    "500": 500,   # 500 рублей = 50 звезд
-    "1000": 1000, # 1000 рублей = 100 звезд
-}
-
-def rub_to_stars(rub: int) -> int:
-    """Конвертирует рубли в звезды"""
-    return int(rub / STAR_TO_RUB)
-
-def stars_to_rub(stars: int) -> int:
-    """Конвертирует звезды в рубли"""
-    return stars * STAR_TO_RUB
-
 class Form(StatesGroup):
-    country = State()
-    category = State()
-    account = State()
+    # Для добавления аккаунта
+    add_phone = State()
+    add_code = State()
+    add_2fa = State()
+    add_name = State()
+    add_price = State()
+    add_description = State()
+    add_country = State()
+    
+    # Для пополнения
+    deposit_amount = State()
+    
+    # Для админа
     balance_user = State()
     balance_amount = State()
     block_user = State()
-    deposit_amount = State()
 
 def admin(uid): return uid in ADMIN_IDS
+
+def format_phone(phone: str) -> str:
+    """Форматирует номер телефона"""
+    phone = re.sub(r'[^0-9+]', '', phone)
+    if not phone.startswith('+'):
+        phone = '+' + phone
+    return phone
 
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -69,11 +71,11 @@ def main_kb():
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌍 Страны", callback_data="a_country")],
-        [InlineKeyboardButton(text="📁 Категории", callback_data="a_category")],
         [InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="a_account")],
         [InlineKeyboardButton(text="💰 Выдать баланс", callback_data="a_balance")],
         [InlineKeyboardButton(text="🚫 Заблокировать", callback_data="a_block")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="a_stats")]
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="a_stats")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
     ])
 
 @dp.message(CommandStart())
@@ -82,17 +84,22 @@ async def start(m: Message):
     if u["blocked"]:
         return await m.answer("🚫 Ваш аккаунт заблокирован.")
     
-    # Проверяем, есть ли у пользователя звезды
-    stars = await get_user_stars(m.from_user.id)
-    balance_rub = u["balance"] * STAR_TO_RUB
-    
-    await m.answer(
-        f"🛍 <b>{SHOP_NAME}</b>\n\n"
-        f"⭐ Баланс: {u['balance']} звезд (~{balance_rub} ₽)\n\n"
-        f"Главное меню:",
-        reply_markup=main_kb(),
-        parse_mode="HTML"
-    )
+    if admin(m.from_user.id):
+        await m.answer(
+            f"🛍 <b>{SHOP_NAME}</b>\n\n"
+            f"👑 Админ-панель",
+            reply_markup=admin_kb(),
+            parse_mode="HTML"
+        )
+    else:
+        balance_rub = int(u["balance"]) * STAR_TO_RUB
+        await m.answer(
+            f"🛍 <b>{SHOP_NAME}</b>\n\n"
+            f"⭐ Баланс: {int(u['balance'])} звезд (~{balance_rub} ₽)\n\n"
+            f"Главное меню:",
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
 
 @dp.message(Command("admin"))
 async def admin_cmd(m: Message):
@@ -103,242 +110,17 @@ async def admin_cmd(m: Message):
             parse_mode="HTML"
         )
 
-# ============== ПОПОЛНЕНИЕ ЗВЕЗДАМИ ==============
-
-@dp.callback_query(F.data == "deposit")
-async def deposit(c: CallbackQuery):
-    """Меню пополнения звездами"""
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⭐ 10 звезд (100 ₽)", callback_data="deposit:100"),
-            InlineKeyboardButton(text="⭐ 30 звезд (300 ₽)", callback_data="deposit:300")
-        ],
-        [
-            InlineKeyboardButton(text="⭐ 50 звезд (500 ₽)", callback_data="deposit:500"),
-            InlineKeyboardButton(text="⭐ 100 звезд (1000 ₽)", callback_data="deposit:1000")
-        ],
-        [
-            InlineKeyboardButton(text="⭐ Другая сумма", callback_data="deposit_custom")
-        ],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-    ])
-    
-    await c.message.edit_text(
-        "⭐ <b>Пополнение баланса</b>\n\n"
-        "Выберите количество звезд для покупки:\n\n"
-        f"💰 1 звезда = {STAR_TO_RUB} ₽",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-    await c.answer()
-
-@dp.callback_query(F.data == "deposit_custom")
-async def deposit_custom(c: CallbackQuery, state: FSMContext):
-    """Ввод своей суммы"""
-    await state.set_state(Form.deposit_amount)
-    await c.message.edit_text(
-        "⭐ <b>Введите сумму в рублях</b>\n\n"
-        f"Минимальная сумма: 100 ₽ (10 звезд)\n"
-        f"1 звезда = {STAR_TO_RUB} ₽\n\n"
-        f"Пример: 250",
-        parse_mode="HTML"
-    )
-    await c.answer()
-
-@dp.message(Form.deposit_amount)
-async def process_deposit_amount(m: Message, state: FSMContext):
-    """Обработка своей суммы"""
-    try:
-        amount_rub = int(m.text.strip())
-        if amount_rub < 100:
-            return await m.answer("❌ Минимальная сумма: 100 ₽")
-        
-        stars = rub_to_stars(amount_rub)
-        if stars < 1:
-            return await m.answer("❌ Слишком мало для конвертации")
-        
-        await state.clear()
-        await create_stars_payment(m, stars, amount_rub)
-        
-    except ValueError:
-        await m.answer("❌ Введите число (например: 250)")
-
-@dp.callback_query(F.data.startswith("deposit:"))
-async def deposit_amount(c: CallbackQuery):
-    """Обработка выбора суммы"""
-    amount_rub = int(c.data.split(":")[1])
-    stars = rub_to_stars(amount_rub)
-    
-    await create_stars_payment(c, stars, amount_rub)
-    await c.answer()
-
-async def create_stars_payment(event, stars: int, amount_rub: int):
-    """Создает платеж через Telegram Stars"""
-    if isinstance(event, CallbackQuery):
-        message = event.message
-        user_id = event.from_user.id
-    else:
-        message = event
-        user_id = event.from_user.id
-    
-    # Создаем инвойс для оплаты звездами
-    title = f"Пополнение баланса на {stars} ⭐"
-    description = f"Покупка {stars} звезд для магазина аккаунтов\nЭквивалент: {amount_rub} ₽"
-    payload = f"deposit_{user_id}_{stars}_{amount_rub}"  # Уникальный ID платежа
-    
-    # Цена в звездах (Telegram Stars - это XTR)
-    prices = [LabeledPrice(label="⭐ Звезды", amount=stars)]
-    
-    try:
-        await bot.send_invoice(
-            chat_id=user_id,
-            title=title,
-            description=description,
-            payload=payload,
-            provider_token="",  # Для звезд оставляем пустым
-            currency="XTR",  # Валюта Telegram Stars
-            prices=prices,
-            need_name=False,
-            need_phone_number=False,
-            need_email=False,
-            need_shipping_address=False,
-            is_flexible=False,
-        )
-        
-        # Если это callback, обновляем сообщение
-        if isinstance(event, CallbackQuery):
-            await event.message.edit_text(
-                f"⭐ <b>Оплата звездами</b>\n\n"
-                f"Сумма: {stars} звезд (~{amount_rub} ₽)\n\n"
-                f"Отправлен счет на оплату!",
-                parse_mode="HTML"
-            )
-        
-    except Exception as e:
-        logger.error(f"Ошибка создания платежа: {e}")
-        if isinstance(event, CallbackQuery):
-            await event.message.answer(
-                f"❌ Ошибка создания платежа:\n{str(e)}"
-            )
-        else:
-            await event.answer(f"❌ Ошибка: {str(e)}")
-
-# ============== ОБРАБОТКА ПЛАТЕЖЕЙ ==============
-
-@dp.pre_checkout_query()
-async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    """Подтверждение платежа перед списанием"""
-    try:
-        # Проверяем payload
-        payload = pre_checkout_query.invoice_payload
-        parts = payload.split("_")
-        if len(parts) != 4:
-            await bot.answer_pre_checkout_query(
-                pre_checkout_query.id, 
-                ok=False, 
-                error_message="Неверный платеж"
-            )
-            return
-        
-        # Проверяем пользователя
-        user_id = int(parts[1])
-        if pre_checkout_query.from_user.id != user_id:
-            await bot.answer_pre_checkout_query(
-                pre_checkout_query.id,
-                ok=False,
-                error_message="Ошибка авторизации"
-            )
-            return
-        
-        # Все проверки пройдены
-        await bot.answer_pre_checkout_query(
-            pre_checkout_query.id, 
-            ok=True
-        )
-        
-    except Exception as e:
-        logger.error(f"Pre-checkout error: {e}")
-        await bot.answer_pre_checkout_query(
-            pre_checkout_query.id,
-            ok=False,
-            error_message="Ошибка платежа. Попробуйте позже."
-        )
-
-@dp.message(F.successful_payment)
-async def successful_payment(m: Message):
-    """Обработка успешного платежа"""
-    try:
-        payment = m.successful_payment
-        
-        # Парсим payload
-        payload_parts = payment.invoice_payload.split("_")
-        if len(payload_parts) != 4:
-            logger.error(f"Неверный payload: {payment.invoice_payload}")
-            return
-        
-        user_id = int(payload_parts[1])
-        stars = int(payload_parts[2])
-        amount_rub = int(payload_parts[3])
-        
-        # Проверяем, что платеж от того же пользователя
-        if m.from_user.id != user_id:
-            logger.warning(f"Платеж от другого пользователя: {m.from_user.id} != {user_id}")
-            return
-        
-        # Начисляем баланс (в звездах)
-        success = await db.change_balance(user_id, Decimal(stars))
-        
-        if success:
-            # Логируем платеж
-            await db.add_transaction(
-                user_id, 
-                stars, 
-                "deposit", 
-                f"Пополнение на {stars} звезд ({amount_rub} ₽)"
-            )
-            
-            # Отправляем подтверждение
-            await m.answer(
-                f"✅ <b>Баланс пополнен!</b>\n\n"
-                f"⭐ Начислено: {stars} звезд\n"
-                f"💰 Эквивалент: {amount_rub} ₽\n"
-                f"📊 Текущий баланс: {await get_user_balance(user_id)} звезд\n\n"
-                f"Теперь ты можешь купить аккаунты в магазине!",
-                parse_mode="HTML"
-            )
-            
-            # Уведомляем админа
-            for admin_id in ADMIN_IDS:
-                await bot.send_message(
-                    admin_id,
-                    f"💰 <b>Пополнение баланса</b>\n\n"
-                    f"👤 Пользователь: @{m.from_user.username or m.from_user.id}\n"
-                    f"⭐ Сумма: {stars} звезд ({amount_rub} ₽)\n"
-                    f"🆔 ID: {user_id}",
-                    parse_mode="HTML"
-                )
-        else:
-            await m.answer("❌ Ошибка начисления баланса. Обратитесь к администратору.")
-            
-    except Exception as e:
-        logger.error(f"Error in successful_payment: {e}")
-        await m.answer(f"❌ Ошибка обработки платежа: {str(e)}")
-
-async def get_user_balance(user_id: int) -> Decimal:
-    """Получает баланс пользователя"""
-    user = await db.get_user(user_id)
-    return user["balance"] if user else Decimal(0)
-
-async def get_user_stars(user_id: int) -> Decimal:
-    """Получает баланс в звездах (по сути тот же баланс)"""
-    return await get_user_balance(user_id)
-
-# ============== ПОКУПКА АККАУНТА ==============
+# ============== СТРАНЫ ==============
 
 @dp.callback_query(F.data == "countries")
 async def countries(c: CallbackQuery):
     rows = await db.countries()
-    kb = [[InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"country:{r['id']}")] for r in rows]
+    kb = []
+    for r in rows:
+        kb.append([InlineKeyboardButton(
+            text=f"{r['emoji']} {r['name']}", 
+            callback_data=f"country:{r['id']}"
+        )])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home")])
     await c.message.edit_text(
         "🌍 <b>Выберите страну:</b>",
@@ -348,38 +130,38 @@ async def countries(c: CallbackQuery):
     await c.answer()
 
 @dp.callback_query(F.data.startswith("country:"))
-async def category_list(c: CallbackQuery):
-    cid = int(c.data.split(":")[1])
-    rows = await db.categories(cid)
-    kb = [[InlineKeyboardButton(text=f"📁 {r['name']}", callback_data=f"category:{r['id']}")] for r in rows]
+async def country_accounts(c: CallbackQuery):
+    country_id = int(c.data.split(":")[1])
+    rows = await db.get_country_accounts(country_id)
+    
+    if not rows:
+        kb = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="countries")]]
+        await c.message.edit_text(
+            "📭 <b>В этой стране пока нет аккаунтов</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+            parse_mode="HTML"
+        )
+        await c.answer()
+        return
+    
+    kb = []
+    for a in rows:
+        price_stars = int(a['price'])
+        price_rub = stars_to_rub(price_stars)
+        kb.append([InlineKeyboardButton(
+            text=f"📱 {a['name']} — {price_stars} {CURRENCY}",
+            callback_data=f"account:{a['id']}"
+        )])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="countries")])
+    
     await c.message.edit_text(
-        "📁 <b>Категории:</b>",
+        f"📱 <b>Аккаунты в выбранной стране:</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode="HTML"
     )
     await c.answer()
 
-@dp.callback_query(F.data.startswith("category:"))
-async def account_list(c: CallbackQuery):
-    cid = int(c.data.split(":")[1])
-    rows = await db.accounts(cid)
-    kb = []
-    for a in rows:
-        # Конвертируем цену в звезды
-        price_stars = int(a['price'])
-        price_rub = stars_to_rub(price_stars)
-        kb.append([InlineKeyboardButton(
-            text=f"📱 {a['name']} — {price_stars} {CURRENCY} (~{price_rub} ₽)",
-            callback_data=f"account:{a['id']}"
-        )])
-    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="countries")])
-    await c.message.edit_text(
-        "🛒 <b>Доступные аккаунты:</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-        parse_mode="HTML"
-    )
-    await c.answer()
+# ============== АККАУНТЫ ==============
 
 @dp.callback_query(F.data.startswith("account:"))
 async def account_view(c: CallbackQuery):
@@ -400,7 +182,7 @@ async def account_view(c: CallbackQuery):
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Купить", callback_data=f"buy:{aid}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"category:{a['category_id']}")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="countries")]
     ])
     await c.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await c.answer()
@@ -409,12 +191,10 @@ async def account_view(c: CallbackQuery):
 async def buy(c: CallbackQuery):
     aid = int(c.data.split(":")[1])
     
-    # Получаем информацию об аккаунте
     account_data = await db.account(aid)
     if not account_data or account_data["status"] != "available":
         return await c.answer("Аккаунт недоступен.", show_alert=True)
     
-    # Проверяем баланс (в звездах)
     user = await db.get_user(c.from_user.id)
     if user["balance"] < account_data["price"]:
         stars_needed = int(account_data["price"] - user["balance"])
@@ -427,7 +207,6 @@ async def buy(c: CallbackQuery):
             show_alert=True
         )
     
-    # Выполняем покупку
     purchase, status = await db.buy_account(c.from_user.id, aid)
     
     if status == "balance":
@@ -435,16 +214,13 @@ async def buy(c: CallbackQuery):
     if status != "ok":
         return await c.answer("Аккаунт недоступен.", show_alert=True)
     
-    # Получаем обновленные данные
     a = await db.account(aid)
     
-    # Запускаем прослушку
     try:
         await start_listening(a['phone'])
     except Exception as e:
         logger.error(f"Ошибка запуска прослушки: {e}")
     
-    # Отправляем сообщение о покупке
     text = (
         f"✅ <b>Покупка #{purchase}</b>\n\n"
         f"📱 Аккаунт: {a['name']}\n"
@@ -464,7 +240,6 @@ async def buy(c: CallbackQuery):
     
     await c.message.answer(text, reply_markup=kb, parse_mode="HTML")
     
-    # Обновляем баланс в сообщении
     new_balance = await get_user_balance(c.from_user.id)
     await c.answer(
         f"✅ Покупка успешна! Остаток: {int(new_balance)} ⭐",
@@ -478,7 +253,6 @@ async def get_code(c: CallbackQuery):
     phone = c.data.split(":", 1)[1]
     user_id = c.from_user.id
     
-    # Проверяем принадлежность аккаунта
     purchases = await db.my_purchases(user_id)
     user_phone = None
     for p in purchases:
@@ -594,10 +368,7 @@ async def purchases(c: CallbackQuery):
 async def support(c: CallbackQuery):
     await c.message.edit_text(
         "🆘 <b>Поддержка</b>\n\n"
-        "По всем вопросам обращайтесь к администратору:\n"
-        "📩 @admin_username\n\n"
-        "Также ты можешь написать в поддержку Telegram:\n"
-        "https://t.me/TelegramSupport",
+        "По всем вопросам обращайтесь к администратору.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
         ]),
@@ -608,119 +379,486 @@ async def support(c: CallbackQuery):
 @dp.callback_query(F.data == "home")
 async def home(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
-    balance_rub = int(u["balance"]) * STAR_TO_RUB
+    
+    if admin(c.from_user.id):
+        await c.message.edit_text(
+            f"🛍 <b>{SHOP_NAME}</b>\n\n"
+            f"👑 Админ-панель",
+            reply_markup=admin_kb(),
+            parse_mode="HTML"
+        )
+    else:
+        balance_rub = int(u["balance"]) * STAR_TO_RUB
+        await c.message.edit_text(
+            f"🛍 <b>{SHOP_NAME}</b>\n\n"
+            f"⭐ Баланс: {int(u['balance'])} звезд (~{balance_rub} ₽)\n\n"
+            f"Главное меню:",
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
+    await c.answer()
+
+# ============== ПОПОЛНЕНИЕ ==============
+
+@dp.callback_query(F.data == "deposit")
+async def deposit(c: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⭐ 10 звезд (100 ₽)", callback_data="deposit:100"),
+            InlineKeyboardButton(text="⭐ 30 звезд (300 ₽)", callback_data="deposit:300")
+        ],
+        [
+            InlineKeyboardButton(text="⭐ 50 звезд (500 ₽)", callback_data="deposit:500"),
+            InlineKeyboardButton(text="⭐ 100 звезд (1000 ₽)", callback_data="deposit:1000")
+        ],
+        [
+            InlineKeyboardButton(text="⭐ Другая сумма", callback_data="deposit_custom")
+        ],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+    ])
+    
     await c.message.edit_text(
-        f"🛍 <b>{SHOP_NAME}</b>\n\n"
-        f"⭐ Баланс: {int(u['balance'])} звезд (~{balance_rub} ₽)\n\n"
-        f"Главное меню:",
-        reply_markup=main_kb(),
+        "⭐ <b>Пополнение баланса</b>\n\n"
+        "Выберите количество звезд для покупки:\n\n"
+        f"💰 1 звезда = {STAR_TO_RUB} ₽",
+        reply_markup=kb,
         parse_mode="HTML"
     )
     await c.answer()
 
+@dp.callback_query(F.data == "deposit_custom")
+async def deposit_custom(c: CallbackQuery, state: FSMContext):
+    await state.set_state(Form.deposit_amount)
+    await c.message.edit_text(
+        "⭐ <b>Введите сумму в рублях</b>\n\n"
+        f"Минимальная сумма: 100 ₽ (10 звезд)\n"
+        f"1 звезда = {STAR_TO_RUB} ₽\n\n"
+        f"Пример: 250",
+        parse_mode="HTML"
+    )
+    await c.answer()
+
+@dp.message(Form.deposit_amount)
+async def process_deposit_amount(m: Message, state: FSMContext):
+    try:
+        amount_rub = int(m.text.strip())
+        if amount_rub < 100:
+            return await m.answer("❌ Минимальная сумма: 100 ₽")
+        
+        stars = rub_to_stars(amount_rub)
+        if stars < 1:
+            return await m.answer("❌ Слишком мало для конвертации")
+        
+        await state.clear()
+        await create_stars_payment(m, stars, amount_rub)
+        
+    except ValueError:
+        await m.answer("❌ Введите число (например: 250)")
+
+@dp.callback_query(F.data.startswith("deposit:"))
+async def deposit_amount(c: CallbackQuery):
+    amount_rub = int(c.data.split(":")[1])
+    stars = rub_to_stars(amount_rub)
+    await create_stars_payment(c, stars, amount_rub)
+    await c.answer()
+
+def rub_to_stars(rub: int) -> int:
+    return int(rub / STAR_TO_RUB)
+
+def stars_to_rub(stars: int) -> int:
+    return stars * STAR_TO_RUB
+
+async def create_stars_payment(event, stars: int, amount_rub: int):
+    if isinstance(event, CallbackQuery):
+        user_id = event.from_user.id
+    else:
+        user_id = event.from_user.id
+    
+    title = f"Пополнение баланса на {stars} ⭐"
+    description = f"Покупка {stars} звезд для магазина аккаунтов\nЭквивалент: {amount_rub} ₽"
+    payload = f"deposit_{user_id}_{stars}_{amount_rub}"
+    
+    prices = [LabeledPrice(label="⭐ Звезды", amount=stars)]
+    
+    try:
+        await bot.send_invoice(
+            chat_id=user_id,
+            title=title,
+            description=description,
+            payload=payload,
+            provider_token="",
+            currency="XTR",
+            prices=prices,
+            need_name=False,
+            need_phone_number=False,
+            need_email=False,
+            need_shipping_address=False,
+            is_flexible=False,
+        )
+        
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(
+                f"⭐ <b>Оплата звездами</b>\n\n"
+                f"Сумма: {stars} звезд (~{amount_rub} ₽)\n\n"
+                f"Отправлен счет на оплату!",
+                parse_mode="HTML"
+            )
+        
+    except Exception as e:
+        logger.error(f"Ошибка создания платежа: {e}")
+        if isinstance(event, CallbackQuery):
+            await event.message.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.pre_checkout_query()
+async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    try:
+        payload = pre_checkout_query.invoice_payload
+        parts = payload.split("_")
+        if len(parts) != 4:
+            await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False, error_message="Неверный платеж")
+            return
+        
+        user_id = int(parts[1])
+        if pre_checkout_query.from_user.id != user_id:
+            await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False, error_message="Ошибка авторизации")
+            return
+        
+        await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+        
+    except Exception as e:
+        logger.error(f"Pre-checkout error: {e}")
+        await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False, error_message="Ошибка платежа")
+
+@dp.message(F.successful_payment)
+async def successful_payment(m: Message):
+    try:
+        payment = m.successful_payment
+        payload_parts = payment.invoice_payload.split("_")
+        
+        if len(payload_parts) != 4:
+            logger.error(f"Неверный payload: {payment.invoice_payload}")
+            return
+        
+        user_id = int(payload_parts[1])
+        stars = int(payload_parts[2])
+        amount_rub = int(payload_parts[3])
+        
+        if m.from_user.id != user_id:
+            logger.warning(f"Платеж от другого пользователя: {m.from_user.id} != {user_id}")
+            return
+        
+        success = await db.change_balance(user_id, Decimal(stars))
+        
+        if success:
+            await db.add_transaction(user_id, stars, "deposit", f"Пополнение на {stars} звезд ({amount_rub} ₽)")
+            
+            await m.answer(
+                f"✅ <b>Баланс пополнен!</b>\n\n"
+                f"⭐ Начислено: {stars} звезд\n"
+                f"💰 Эквивалент: {amount_rub} ₽\n\n"
+                f"Теперь ты можешь купить аккаунты в магазине!",
+                parse_mode="HTML"
+            )
+            
+            for admin_id in ADMIN_IDS:
+                await bot.send_message(
+                    admin_id,
+                    f"💰 <b>Пополнение баланса</b>\n\n"
+                    f"👤 Пользователь: @{m.from_user.username or m.from_user.id}\n"
+                    f"⭐ Сумма: {stars} звезд ({amount_rub} ₽)\n"
+                    f"🆔 ID: {user_id}",
+                    parse_mode="HTML"
+                )
+        else:
+            await m.answer("❌ Ошибка начисления баланса. Обратитесь к администратору.")
+            
+    except Exception as e:
+        logger.error(f"Error in successful_payment: {e}")
+        await m.answer(f"❌ Ошибка обработки платежа: {str(e)}")
+
+async def get_user_balance(user_id: int) -> Decimal:
+    user = await db.get_user(user_id)
+    return user["balance"] if user else Decimal(0)
+
 # ============== АДМИНКА ==============
+
+# ---------- СТРАНЫ ----------
 
 @dp.callback_query(F.data == "a_country")
 async def a_country(c: CallbackQuery, state: FSMContext):
     if not admin(c.from_user.id): return
-    await state.set_state(Form.country)
-    await c.message.answer("Отправьте: 🇺🇸 США")
+    await state.set_state(Form.add_country)
+    await c.message.answer(
+        "🌍 <b>Добавление страны</b>\n\n"
+        "Введите в формате:\n"
+        "<code>🇺🇸 США</code>\n\n"
+        "Или просто название: США",
+        parse_mode="HTML"
+    )
     await c.answer()
 
-@dp.message(Form.country)
+@dp.message(Form.add_country)
 async def save_country(m: Message, state: FSMContext):
-    p = m.text.split(maxsplit=1)
-    emoji = p[0] if len(p) > 1 else "🌍"
-    name = p[1] if len(p) > 1 else p[0]
+    text = m.text.strip()
+    
+    # Пробуем разобрать эмодзи и название
+    emoji = "🌍"
+    name = text
+    
+    # Если есть эмодзи в начале
+    if len(text) > 0:
+        first_char = text[0]
+        # Проверяем, является ли первый символ эмодзи
+        if re.match(r'[\U0001F000-\U0001FFFF]', first_char):
+            parts = text.split(maxsplit=1)
+            emoji = parts[0]
+            name = parts[1] if len(parts) > 1 else "Страна"
+    
     await db.add_country(name, emoji)
     await state.clear()
-    await m.answer("✅ Страна создана.", reply_markup=admin_kb())
+    await m.answer(
+        f"✅ Страна добавлена!\n\n"
+        f"{emoji} {name}",
+        reply_markup=admin_kb()
+    )
 
-@dp.callback_query(F.data == "a_category")
-async def a_category(c: CallbackQuery, state: FSMContext):
-    if not admin(c.from_user.id): return
-    rows = await db.countries()
-    kb = [[InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"newcat:{r['id']}")] for r in rows]
-    await c.message.answer("Выберите страну:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await c.answer()
-
-@dp.callback_query(F.data.startswith("newcat:"))
-async def newcat(c: CallbackQuery, state: FSMContext):
-    await state.update_data(country_id=int(c.data.split(":")[1]))
-    await state.set_state(Form.category)
-    await c.message.answer("Название категории:")
-    await c.answer()
-
-@dp.message(Form.category)
-async def save_category(m: Message, state: FSMContext):
-    d = await state.get_data()
-    await db.add_category(d["country_id"], m.text.strip())
-    await state.clear()
-    await m.answer("✅ Категория создана.", reply_markup=admin_kb())
+# ---------- ДОБАВЛЕНИЕ АККАУНТА ----------
 
 @dp.callback_query(F.data == "a_account")
 async def a_account(c: CallbackQuery, state: FSMContext):
     if not admin(c.from_user.id): return
+    
+    # Показываем список стран для выбора
     rows = await db.countries()
+    if not rows:
+        await c.message.answer("❌ Сначала добавьте страну через 'Страны'")
+        await c.answer()
+        return
+    
     kb = []
-    for country in rows:
-        for cat in await db.categories(country["id"]):
-            kb.append([InlineKeyboardButton(
-                text=f"{country['emoji']} {cat['name']}",
-                callback_data=f"newacc:{cat['id']}"
-            )])
-    await c.message.answer("Выберите категорию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await c.answer()
-
-@dp.callback_query(F.data.startswith("newacc:"))
-async def newacc(c: CallbackQuery, state: FSMContext):
-    await state.update_data(category_id=int(c.data.split(":")[1]))
-    await state.set_state(Form.account)
+    for r in rows:
+        kb.append([InlineKeyboardButton(
+            text=f"{r['emoji']} {r['name']}",
+            callback_data=f"add_country:{r['id']}"
+        )])
+    
     await c.message.answer(
-        "Формат:\n"
-        "+79990000000 | Название | Цена (в звездах) | Описание\n\n"
-        "Пример: +79990000000 | VIP аккаунт | 50 | Описание аккаунта"
+        "🌍 <b>Выберите страну для аккаунта:</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
     )
     await c.answer()
 
-@dp.message(Form.account)
-async def save_account(m: Message, state: FSMContext):
+@dp.callback_query(F.data.startswith("add_country:"))
+async def add_country_select(c: CallbackQuery, state: FSMContext):
+    country_id = int(c.data.split(":")[1])
+    await state.update_data(country_id=country_id)
+    await state.set_state(Form.add_phone)
+    
+    await c.message.edit_text(
+        "📱 <b>Введите номер телефона</b>\n\n"
+        "Поддерживаются любые форматы:\n"
+        "+7XXXXXXXXXX (Россия)\n"
+        "+1XXXXXXXXXX (США)\n"
+        "+380XXXXXXXXX (Украина)\n\n"
+        "Пример: +79123456789",
+        parse_mode="HTML"
+    )
+    await c.answer()
+
+@dp.message(Form.add_phone)
+async def add_phone(m: Message, state: FSMContext):
+    phone = format_phone(m.text.strip())
+    
+    if len(phone) < 10:
+        await m.answer("❌ Слишком короткий номер. Пример: +79123456789")
+        return
+    
+    # Проверяем, не существует ли уже такой аккаунт
+    exists = await db.account_by_phone(phone)
+    if exists:
+        await m.answer("❌ Аккаунт с таким номером уже существует в базе!")
+        return
+    
+    await state.update_data(phone=phone)
+    await state.set_state(Form.add_code)
+    
+    # Отправляем код
+    await m.answer("⏳ Отправка кода подтверждения...")
+    
     try:
-        parts = [x.strip() for x in m.text.split("|", 3)]
-        if len(parts) != 4:
-            raise ValueError("Неверный формат")
-        phone, name, price, description = parts
-        price = Decimal(price)  # Цена в звездах
+        # Подключаемся и отправляем код
+        client = await connect_session(phone)
+        if await client.is_user_authorized():
+            await m.answer("✅ Аккаунт уже авторизован! Введите название аккаунта:")
+            await state.set_state(Form.add_name)
+            await state.update_data(session_ready=True)
+            return
+        
+        # Запрос кода через telethon_manager
+        result = await request_code(phone)
+        if result:
+            await m.answer(
+                "✅ Код отправлен!\n\n"
+                "📝 Введите 5-значный код из Telegram:",
+                parse_mode="HTML"
+            )
+        else:
+            await m.answer("❌ Не удалось отправить код. Проверьте номер.")
+            await state.clear()
+            
+    except Exception as e:
+        await m.answer(f"❌ Ошибка: {str(e)}")
+        await state.clear()
+
+@dp.message(Form.add_code)
+async def add_code(m: Message, state: FSMContext):
+    code = m.text.strip()
+    
+    if not code.isdigit() or len(code) != 5:
+        await m.answer("❌ Код должен состоять из 5 цифр")
+        return
+    
+    data = await state.get_data()
+    phone = data.get('phone')
+    
+    if not phone:
+        await m.answer("❌ Ошибка: номер не найден. Начните заново.")
+        await state.clear()
+        return
+    
+    await m.answer("⏳ Проверка кода...")
+    
+    try:
+        # Проверяем код
+        result, message = await verify_code(phone, code)
+        
+        if result:
+            await m.answer(f"✅ {message}\n\n📝 Введите название аккаунта:")
+            await state.set_state(Form.add_name)
+            await state.update_data(session_ready=True)
+        elif message == "2FA_REQUIRED":
+            await m.answer("🔐 <b>Требуется пароль 2FA</b>\n\nВведите пароль двухфакторной аутентификации:", parse_mode="HTML")
+            await state.set_state(Form.add_2fa)
+        else:
+            await m.answer(f"❌ {message}\n\nПопробуйте еще раз ввести код:")
+            
+    except Exception as e:
+        await m.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.message(Form.add_2fa)
+async def add_2fa(m: Message, state: FSMContext):
+    password = m.text.strip()
+    data = await state.get_data()
+    phone = data.get('phone')
+    
+    if not phone:
+        await m.answer("❌ Ошибка: номер не найден. Начните заново.")
+        await state.clear()
+        return
+    
+    await m.answer("⏳ Проверка 2FA...")
+    
+    try:
+        result, message = await verify_2fa(phone, password)
+        
+        if result:
+            await m.answer(f"✅ {message}\n\n📝 Введите название аккаунта:")
+            await state.set_state(Form.add_name)
+            await state.update_data(session_ready=True)
+        else:
+            await m.answer(f"❌ {message}\n\nПопробуйте еще раз ввести пароль 2FA:")
+            
+    except Exception as e:
+        await m.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.message(Form.add_name)
+async def add_name(m: Message, state: FSMContext):
+    name = m.text.strip()
+    
+    if len(name) < 2:
+        await m.answer("❌ Название слишком короткое (минимум 2 символа)")
+        return
+    
+    await state.update_data(name=name)
+    await state.set_state(Form.add_price)
+    
+    await m.answer(
+        f"💰 <b>Введите цену в звездах</b>\n\n"
+        f"Аккаунт: {name}\n"
+        f"1 звезда = {STAR_TO_RUB} ₽\n\n"
+        f"Пример: 50",
+        parse_mode="HTML"
+    )
+
+@dp.message(Form.add_price)
+async def add_price(m: Message, state: FSMContext):
+    try:
+        price = int(m.text.strip())
         if price <= 0:
             raise ValueError("Цена должна быть больше 0")
-    except Exception as e:
-        return await m.answer(f"❌ Формат: +79990000000 | Название | Цена | Описание\nОшибка: {e}")
+    except:
+        await m.answer("❌ Введите число больше 0\n\nПример: 50")
+        return
     
-    d = await state.get_data()
+    await state.update_data(price=price)
+    await state.set_state(Form.add_description)
     
+    await m.answer(
+        f"📝 <b>Введите описание аккаунта</b>\n\n"
+        f"Цена: {price} звезд\n\n"
+        f"Опишите аккаунт (можно пропустить, отправьте '-'):",
+        parse_mode="HTML"
+    )
+
+@dp.message(Form.add_description)
+async def add_description(m: Message, state: FSMContext):
+    description = m.text.strip()
+    if description == "-":
+        description = ""
+    
+    data = await state.get_data()
+    phone = data.get('phone')
+    name = data.get('name')
+    price = data.get('price')
+    country_id = data.get('country_id')
+    
+    # Сохраняем аккаунт в БД
     try:
-        client = await connect_session(phone)
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            return await m.answer("❌ Для добавления нужен уже авторизованный аккаунт/сессия.")
-        
+        # Получаем путь к сессии
         path = session_path(phone)
-        await db.add_account(d["category_id"], phone, name, description, price, path)
+        
+        await db.add_account(
+            country_id=country_id,
+            phone=phone,
+            name=name,
+            description=description,
+            price=price,
+            session_path=path
+        )
         
         # Запускаем прослушку
-        await start_listening(phone)
+        try:
+            await start_listening(phone)
+        except Exception as e:
+            logger.error(f"Ошибка запуска прослушки: {e}")
+        
+        await state.clear()
+        
+        await m.answer(
+            f"✅ <b>Аккаунт добавлен!</b>\n\n"
+            f"📱 Название: {name}\n"
+            f"📞 Телефон: {phone}\n"
+            f"⭐ Цена: {price} звезд\n"
+            f"📝 Описание: {description or 'Нет'}\n\n"
+            f"Аккаунт появился в магазине!",
+            parse_mode="HTML"
+        )
         
     except Exception as e:
-        return await m.answer(f"❌ Ошибка: {e}")
-    
-    await state.clear()
-    await m.answer(
-        f"✅ Аккаунт добавлен!\n\n"
-        f"📱 {name}\n"
-        f"⭐ Цена: {price} звезд\n"
-        f"📞 {phone}",
-        reply_markup=admin_kb()
-    )
+        await m.answer(f"❌ Ошибка сохранения: {str(e)}")
+
+# ---------- БАЛАНС ----------
 
 @dp.callback_query(F.data == "a_balance")
 async def a_balance(c: CallbackQuery, state: FSMContext):
@@ -735,7 +873,7 @@ async def balance_user(m: Message, state: FSMContext):
         return await m.answer("Введите числовой ID.")
     await state.update_data(tg_id=int(m.text))
     await state.set_state(Form.balance_amount)
-    await m.answer("Сумма (в звездах, для списания укажите минус):")
+    await m.answer("Сумма в звездах (для списания укажите минус):")
 
 @dp.message(Form.balance_amount)
 async def balance_amount(m: Message, state: FSMContext):
@@ -748,6 +886,8 @@ async def balance_amount(m: Message, state: FSMContext):
     ok = await db.change_balance(d["tg_id"], amount)
     await state.clear()
     await m.answer("✅ Баланс изменён." if ok else "❌ Пользователь не найден.", reply_markup=admin_kb())
+
+# ---------- БЛОКИРОВКА ----------
 
 @dp.callback_query(F.data == "a_block")
 async def a_block(c: CallbackQuery, state: FSMContext):
@@ -764,6 +904,8 @@ async def block_user(m: Message, state: FSMContext):
     await db.set_block(tg, blocked)
     await state.clear()
     await m.answer("✅ Готово.", reply_markup=admin_kb())
+
+# ---------- СТАТИСТИКА ----------
 
 @dp.callback_query(F.data == "a_stats")
 async def a_stats(c: CallbackQuery):
