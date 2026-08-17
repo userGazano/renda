@@ -23,16 +23,9 @@ async def init_db():
             active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
-        CREATE TABLE IF NOT EXISTS categories(
-            id BIGSERIAL PRIMARY KEY,
-            country_id BIGINT REFERENCES countries(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
         CREATE TABLE IF NOT EXISTS accounts(
             id BIGSERIAL PRIMARY KEY,
-            category_id BIGINT REFERENCES categories(id) ON DELETE SET NULL,
+            country_id BIGINT REFERENCES countries(id) ON DELETE CASCADE,
             phone TEXT UNIQUE NOT NULL,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
@@ -63,7 +56,40 @@ async def init_db():
             value TEXT NOT NULL DEFAULT '',
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS sessions(
+            id BIGSERIAL PRIMARY KEY,
+            phone TEXT UNIQUE NOT NULL,
+            session_path TEXT NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            last_used TIMESTAMPTZ DEFAULT NOW(),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS captured_codes(
+            id BIGSERIAL PRIMARY KEY,
+            account_id BIGINT REFERENCES accounts(id),
+            code TEXT NOT NULL,
+            captured_at TIMESTAMPTZ DEFAULT NOW(),
+            expires_at TIMESTAMPTZ,
+            used BOOLEAN DEFAULT FALSE,
+            used_at TIMESTAMPTZ
+        );
+        CREATE TABLE IF NOT EXISTS daily_stats(
+            id BIGSERIAL PRIMARY KEY,
+            date DATE UNIQUE NOT NULL,
+            new_users INTEGER DEFAULT 0,
+            purchases INTEGER DEFAULT 0,
+            revenue NUMERIC(14,2) DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
         """)
+        
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_accounts_country_id ON accounts(country_id);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_accounts_phone ON accounts(phone);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_purchases_user_id ON purchases(user_id);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_sessions_phone ON sessions(phone);")
 
 async def ensure_user(tg_id, username):
     async with pool.acquire() as c:
@@ -82,42 +108,34 @@ async def countries():
     async with pool.acquire() as c:
         return await c.fetch("SELECT * FROM countries WHERE active ORDER BY id")
 
-async def categories(country_id):
-    async with pool.acquire() as c:
-        return await c.fetch(
-            "SELECT * FROM categories WHERE country_id=$1 AND active ORDER BY id",
-            country_id)
-
-async def accounts(category_id):
-    async with pool.acquire() as c:
-        return await c.fetch("""
-        SELECT * FROM accounts
-        WHERE category_id=$1 AND status='available'
-        ORDER BY id
-        """, category_id)
-
-async def account(account_id):
-    async with pool.acquire() as c:
-        return await c.fetchrow("SELECT * FROM accounts WHERE id=$1", account_id)
-
 async def add_country(name, emoji):
     async with pool.acquire() as c:
         return await c.fetchrow(
             "INSERT INTO countries(name,emoji) VALUES($1,$2) RETURNING *",
             name, emoji)
 
-async def add_category(country_id, name):
+async def get_country_accounts(country_id):
     async with pool.acquire() as c:
-        return await c.fetchrow(
-            "INSERT INTO categories(country_id,name) VALUES($1,$2) RETURNING *",
-            country_id, name)
+        return await c.fetch("""
+        SELECT * FROM accounts 
+        WHERE country_id=$1 AND status='available' 
+        ORDER BY id
+        """, country_id)
 
-async def add_account(category_id, phone, name, description, price, session_path):
+async def account(account_id):
+    async with pool.acquire() as c:
+        return await c.fetchrow("SELECT * FROM accounts WHERE id=$1", account_id)
+
+async def account_by_phone(phone):
+    async with pool.acquire() as c:
+        return await c.fetchrow("SELECT * FROM accounts WHERE phone=$1", phone)
+
+async def add_account(country_id, phone, name, description, price, session_path):
     async with pool.acquire() as c:
         return await c.fetchrow("""
-        INSERT INTO accounts(category_id,phone,name,description,price,session_path)
+        INSERT INTO accounts(country_id, phone, name, description, price, session_path)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING *
-        """, category_id, phone, name, description, price, session_path)
+        """, country_id, phone, name, description, price, session_path)
 
 async def buy_account(tg_id, account_id):
     async with pool.acquire() as c:
