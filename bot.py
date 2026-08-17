@@ -666,50 +666,9 @@ async def add_country_select(c: CallbackQuery, state: FSMContext):
     )
     await c.answer()
 
-@dp.message(Form.add_phone)
-async def add_phone(m: Message, state: FSMContext):
-    phone = format_phone(m.text.strip())
-    
-    if len(phone) < 10:
-        await m.answer("❌ Слишком короткий номер. Пример: +79123456789")
-        return
-    
-    # Проверяем, не существует ли уже такой аккаунт
-    exists = await db.account_by_phone(phone)
-    if exists:
-        await m.answer("❌ Аккаунт с таким номером уже существует в базе!")
-        return
-    
-    await state.update_data(phone=phone)
-    await state.set_state(Form.add_code)
-    
-    # Отправляем код
-    await m.answer("⏳ Отправка кода подтверждения...")
-    
-    try:
-        # Подключаемся и отправляем код
-        client = await connect_session(phone)
-        if await client.is_user_authorized():
-            await m.answer("✅ Аккаунт уже авторизован! Введите название аккаунта:")
-            await state.set_state(Form.add_name)
-            await state.update_data(session_ready=True)
-            return
-        
-        # Запрос кода через telethon_manager
-        result = await request_code(phone)
-        if result:
-            await m.answer(
-                "✅ Код отправлен!\n\n"
-                "📝 Введите 5-значный код из Telegram:",
-                parse_mode="HTML"
-            )
-        else:
-            await m.answer("❌ Не удалось отправить код. Проверьте номер.")
-            await state.clear()
-            
-    except Exception as e:
-        await m.answer(f"❌ Ошибка: {str(e)}")
-        await state.clear()
+c.answer()
+
+
 
 @dp.message(Form.add_code)
 async def add_code(m: Message, state: FSMContext):
