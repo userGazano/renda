@@ -8,7 +8,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "PASTE_API_HASH_HERE")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://USER:PASSWORD@HOST:5432/DATABASE")
 SESSIONS_DIR = os.getenv("SESSIONS_DIR", "sessions")
-CURRENCY = os.getenv("CURRENCY", "⭐")
+CURRENCY = os.getenv("CURRENCY", "₽")  # Рубли
 SHOP_NAME = os.getenv("SHOP_NAME", "Dolphy Shop")
 
 # Криптобот настройки
