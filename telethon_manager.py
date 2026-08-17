@@ -6,7 +6,7 @@ import re
 import logging
 
 from telethon import TelegramClient, events
-from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError, PhoneNumberInvalidError
 from config import TELEGRAM_API_ID, TELEGRAM_API_HASH, SESSIONS_DIR
 
 logger = logging.getLogger(__name__)
@@ -57,35 +57,55 @@ async def is_authorized(phone: str) -> bool:
         client = await connect_session(phone)
     return await client.is_user_authorized()
 
-async def request_code(phone: str) -> bool:
+async def request_code(phone: str) -> Tuple[bool, str]:
     """Отправляет код подтверждения"""
     try:
+        # Проверяем номер
+        if not phone or len(phone) < 10:
+            return False, "Неверный номер телефона"
+        
+        # Подключаемся
         client = clients.get(phone)
         if not client:
             client = await connect_session(phone)
         
+        # Проверяем авторизацию
         if await client.is_user_authorized():
-            return True
+            logger.info(f"✅ Аккаунт {phone} уже авторизован")
+            return True, "Уже авторизован"
         
-        result = await client.send_code_request(phone)
-        pending_auth[phone] = {
-            'client': client,
-            'phone_code_hash': result.phone_code_hash,
-            'created_at': datetime.now()
-        }
-        return True
+        # Отправляем код
+        logger.info(f"📨 Отправка кода на {phone}")
         
-    except FloodWaitError as e:
-        logger.error(f"Flood wait: {e.seconds}s")
-        return False
+        try:
+            result = await client.send_code_request(phone)
+            phone_code_hash = result.phone_code_hash
+            
+            pending_auth[phone] = {
+                'client': client,
+                'phone_code_hash': phone_code_hash,
+                'created_at': datetime.now()
+            }
+            
+            logger.info(f"✅ Код отправлен на {phone}")
+            return True, "Код отправлен"
+            
+        except FloodWaitError as e:
+            wait_time = e.seconds
+            logger.warning(f"⏳ Flood wait: {wait_time}s")
+            return False, f"Подождите {wait_time} секунд"
+            
+        except PhoneNumberInvalidError:
+            return False, "Неверный номер телефона"
+            
     except Exception as e:
-        logger.error(f"Request code error: {e}")
-        return False
+        logger.error(f"Ошибка отправки кода: {e}")
+        return False, f"Ошибка: {str(e)}"
 
 async def verify_code(phone: str, code: str) -> Tuple[bool, str]:
     """Проверяет код подтверждения"""
     if phone not in pending_auth:
-        return False, "Нет ожидающего кода"
+        return False, "Нет ожидающего кода. Запросите код заново."
     
     try:
         auth_data = pending_auth[phone]
@@ -107,6 +127,10 @@ async def verify_code(phone: str, code: str) -> Tuple[bool, str]:
         except SessionPasswordNeededError:
             return False, "2FA_REQUIRED"
             
+        except Exception as e:
+            logger.error(f"Ошибка входа: {e}")
+            return False, f"Неверный код или ошибка: {str(e)}"
+            
     except Exception as e:
         logger.error(f"Verify code error: {e}")
         return False, str(e)
@@ -120,16 +144,21 @@ async def verify_2fa(phone: str, password: str) -> Tuple[bool, str]:
         auth_data = pending_auth[phone]
         client = auth_data['client']
         
-        await client.sign_in(password=password)
-        del pending_auth[phone]
-        
-        me = await client.get_me()
-        logger.info(f"✅ 2FA пройдена для {phone}: {me.first_name}")
-        
-        await start_listening(phone)
-        
-        return True, f"Вход выполнен! {me.first_name}"
-        
+        try:
+            await client.sign_in(password=password)
+            del pending_auth[phone]
+            
+            me = await client.get_me()
+            logger.info(f"✅ 2FA пройдена для {phone}: {me.first_name}")
+            
+            await start_listening(phone)
+            
+            return True, f"Вход выполнен! {me.first_name}"
+            
+        except Exception as e:
+            logger.error(f"2FA error: {e}")
+            return False, f"Неверный пароль: {str(e)}"
+            
     except Exception as e:
         logger.error(f"2FA error: {e}")
         return False, str(e)
