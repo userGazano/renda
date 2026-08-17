@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 import logging
 import re
+import aiohttp
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -12,7 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.types import SuccessfulPayment
 
 import db
-from config import BOT_TOKEN, ADMIN_IDS, SHOP_NAME, CURRENCY
+from config import BOT_TOKEN, ADMIN_IDS, SHOP_NAME, CURRENCY, CRYPTOBOT_TOKEN, STAR_TO_RUB
 from telethon_manager import (
     connect_session, 
     session_path, 
@@ -27,9 +28,20 @@ from telethon_manager import (
     verify_2fa
 )
 
+from cryptobot import CryptoBot
+from cryptobot.types import Asset, InvoiceStatus
+
 logger = logging.getLogger(__name__)
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
+
+crypto = CryptoBot(CRYPTOBOT_TOKEN)
+
+# Глобальная переменная для курса
+usdt_to_rub = 100
+btc_to_rub = 6000000
+eth_to_rub = 300000
+ton_to_rub = 5
 
 class Form(StatesGroup):
     add_phone = State()
@@ -40,6 +52,7 @@ class Form(StatesGroup):
     add_description = State()
     add_country = State()
     deposit_amount = State()
+    deposit_crypto_rub = State()
     balance_user = State()
     balance_amount = State()
     block_user = State()
@@ -57,6 +70,56 @@ def format_phone(phone: str) -> str:
     if not phone.startswith('+'):
         phone = '+' + phone
     return phone
+
+def rub_to_stars(rub: int) -> int:
+    return int(rub / STAR_TO_RUB)
+
+def stars_to_rub(stars: int) -> int:
+    return stars * STAR_TO_RUB
+
+def rub_to_usdt(rub: int) -> float:
+    return round(rub / usdt_to_rub, 2)
+
+def rub_to_btc(rub: int) -> float:
+    return round(rub / btc_to_rub, 8)
+
+def rub_to_eth(rub: int) -> float:
+    return round(rub / eth_to_rub, 6)
+
+def rub_to_ton(rub: int) -> float:
+    return round(rub / ton_to_rub, 2)
+
+async def update_crypto_rates():
+    """Обновляет курсы криптовалют через API"""
+    global usdt_to_rub, btc_to_rub, eth_to_rub, ton_to_rub
+    
+    try:
+        # Получаем курсы через Cryptobot API
+        rates = await crypto.get_exchange_rates()
+        
+        for rate in rates:
+            if rate.source == Asset.USDT and rate.target == Asset.RUB:
+                usdt_to_rub = rate.rate
+                logger.info(f"💰 USDT/RUB: 1 USDT = {usdt_to_rub} RUB")
+            elif rate.source == Asset.BTC and rate.target == Asset.RUB:
+                btc_to_rub = rate.rate
+                logger.info(f"💰 BTC/RUB: 1 BTC = {btc_to_rub} RUB")
+            elif rate.source == Asset.ETH and rate.target == Asset.RUB:
+                eth_to_rub = rate.rate
+                logger.info(f"💰 ETH/RUB: 1 ETH = {eth_to_rub} RUB")
+            elif rate.source == Asset.TON and rate.target == Asset.RUB:
+                ton_to_rub = rate.rate
+                logger.info(f"💰 TON/RUB: 1 TON = {ton_to_rub} RUB")
+        
+        return
+        
+    except Exception as e:
+        logger.error(f"Ошибка обновления курсов: {e}")
+        # Запасные курсы
+        usdt_to_rub = 100
+        btc_to_rub = 6000000
+        eth_to_rub = 300000
+        ton_to_rub = 5
 
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -85,6 +148,8 @@ async def start(m: Message):
     if u["blocked"]:
         return await m.answer("🚫 Ваш аккаунт заблокирован.")
     
+    balance_rub = stars_to_rub(int(u["balance"]))
+    
     if admin(m.from_user.id):
         await m.answer(
             f"🛍 <b>{SHOP_NAME}</b>\n\n👑 Админ-панель",
@@ -93,7 +158,7 @@ async def start(m: Message):
         )
     else:
         await m.answer(
-            f"🛍 <b>{SHOP_NAME}</b>\n\n⭐ Баланс: {int(u['balance'])} звезд\n\nГлавное меню:",
+            f"🛍 <b>{SHOP_NAME}</b>\n\n⭐ Баланс: {int(u['balance'])} звезд ({balance_rub} ₽)\n\nГлавное меню:",
             reply_markup=main_kb(),
             parse_mode="HTML"
         )
@@ -104,6 +169,21 @@ async def admin_cmd(m: Message):
         await m.answer("⚙️ <b>Админ-панель</b>", reply_markup=admin_kb(), parse_mode="HTML")
     else:
         await m.answer("❌ У вас нет доступа")
+
+@dp.message(Command("rate"))
+async def rate_command(m: Message):
+    """Команда для получения текущих курсов"""
+    await update_crypto_rates()
+    await m.answer(
+        f"📊 <b>Текущие курсы</b>\n\n"
+        f"💰 1 USDT = {usdt_to_rub} ₽\n"
+        f"₿ 1 BTC = {btc_to_rub:,} ₽\n"
+        f"Ξ 1 ETH = {eth_to_rub:,} ₽\n"
+        f"🔷 1 TON = {ton_to_rub} ₽\n\n"
+        f"⭐ 1 звезда = {STAR_TO_RUB} ₽\n"
+        f"Курсы обновлены через Cryptobot API",
+        parse_mode="HTML"
+    )
 
 # ============== СТРАНЫ ДЛЯ ПОКУПАТЕЛЯ ==============
 
@@ -130,13 +210,12 @@ async def country_accounts(c: CallbackQuery):
     
     kb = []
     for a in rows:
-        kb.append([InlineKeyboardButton(text=f"📱 {a['name']} — {int(a['price'])} {CURRENCY}", callback_data=f"account:{a['id']}")])
+        price_rub = stars_to_rub(int(a['price']))
+        kb.append([InlineKeyboardButton(text=f"📱 {a['name']} — {price_rub} ₽", callback_data=f"account:{a['id']}")])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="countries")])
     
     await c.message.edit_text("📱 <b>Аккаунты в выбранной стране:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await c.answer()
-
-# ============== АККАУНТЫ ДЛЯ ПОКУПАТЕЛЯ ==============
 
 @dp.callback_query(F.data.startswith("account:"))
 async def account_view(c: CallbackQuery):
@@ -145,7 +224,9 @@ async def account_view(c: CallbackQuery):
     if not a or a["status"] != "available":
         return await c.answer("Аккаунт уже продан.", show_alert=True)
     
-    text = f"📱 <b>{a['name']}</b>\n\n{a['description']}\n\n💵 Цена: <b>{int(a['price'])} {CURRENCY}</b>"
+    price_rub = stars_to_rub(int(a['price']))
+    
+    text = f"📱 <b>{a['name']}</b>\n\n{a['description']}\n\n💵 Цена: <b>{price_rub} ₽</b>"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Купить", callback_data=f"buy:{aid}")],
@@ -165,7 +246,14 @@ async def buy(c: CallbackQuery):
     user = await db.get_user(c.from_user.id)
     if user["balance"] < account_data["price"]:
         stars_needed = int(account_data["price"] - user["balance"])
-        return await c.answer(f"❌ Недостаточно звезд!\n\nНужно: {int(account_data['price'])} ⭐\nУ тебя: {int(user['balance'])} ⭐\nНе хватает: {stars_needed} ⭐\n\nПополни баланс в главном меню!", show_alert=True)
+        rub_needed = stars_to_rub(stars_needed)
+        return await c.answer(
+            f"❌ Недостаточно звезд!\n\n"
+            f"Нужно: {stars_needed} ⭐ ({rub_needed} ₽)\n"
+            f"У тебя: {int(user['balance'])} ⭐\n\n"
+            f"Пополни баланс в главном меню!",
+            show_alert=True
+        )
     
     purchase, status = await db.buy_account(c.from_user.id, aid)
     
@@ -181,7 +269,19 @@ async def buy(c: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка запуска прослушки: {e}")
     
-    text = f"✅ <b>Покупка #{purchase}</b>\n\n📱 Аккаунт: {a['name']}\n📞 Номер: <code>{a['phone']}</code>\n⭐ Цена: {int(a['price'])} звезд\n\n📝 {a['description']}\n\n🔐 <b>Чтобы получить код подтверждения:</b>\n1. Открой Telegram на телефоне\n2. Зайди в этот аккаунт\n3. Код придет сюда автоматически"
+    price_rub = stars_to_rub(int(a['price']))
+    
+    text = (
+        f"✅ <b>Покупка #{purchase}</b>\n\n"
+        f"📱 Аккаунт: {a['name']}\n"
+        f"📞 Номер: <code>{a['phone']}</code>\n"
+        f"💵 Цена: {price_rub} ₽\n\n"
+        f"📝 {a['description']}\n\n"
+        f"🔐 <b>Чтобы получить код подтверждения:</b>\n"
+        f"1. Открой Telegram на телефоне\n"
+        f"2. Зайди в этот аккаунт\n"
+        f"3. Код придет сюда автоматически"
+    )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📩 Получить код", callback_data=f"get_code:{a['phone']}")],
@@ -191,7 +291,11 @@ async def buy(c: CallbackQuery):
     await c.message.answer(text, reply_markup=kb, parse_mode="HTML")
     
     new_balance = await get_user_balance(c.from_user.id)
-    await c.answer(f"✅ Покупка успешна! Остаток: {int(new_balance)} ⭐", show_alert=True)
+    new_balance_rub = stars_to_rub(int(new_balance))
+    await c.answer(
+        f"✅ Покупка успешна! Остаток: {int(new_balance)} ⭐ ({new_balance_rub} ₽)",
+        show_alert=True
+    )
 
 # ============== ПОЛУЧЕНИЕ КОДА ==============
 
@@ -226,18 +330,35 @@ async def get_code(c: CallbackQuery):
 @dp.callback_query(F.data == "balance")
 async def balance(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
-    await c.message.edit_text(f"⭐ <b>Баланс</b>\n\nЗвезд: <b>{int(u['balance'])}</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Пополнить (от 3⭐)", callback_data="deposit")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-    ]), parse_mode="HTML")
+    balance_rub = stars_to_rub(int(u["balance"]))
+    await c.message.edit_text(
+        f"💰 <b>Баланс</b>\n\n"
+        f"⭐ Звезд: <b>{int(u['balance'])}</b>\n"
+        f"💵 Рублей: <b>{balance_rub} ₽</b>\n\n"
+        f"1 звезда = {STAR_TO_RUB} ₽",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⭐ Пополнить", callback_data="deposit")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+        ]),
+        parse_mode="HTML"
+    )
     await c.answer()
 
 @dp.callback_query(F.data == "profile")
 async def profile(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
-    await c.message.edit_text(f"👤 <b>Профиль</b>\n\n🆔 ID: <code>{u['telegram_id']}</code>\n👤 Имя: @{u['username'] or 'Не указано'}\n⭐ Баланс: <b>{int(u['balance'])}</b> звезд\n📅 Зарегистрирован: {u['created_at'].strftime('%d.%m.%Y')}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-    ]), parse_mode="HTML")
+    balance_rub = stars_to_rub(int(u["balance"]))
+    await c.message.edit_text(
+        f"👤 <b>Профиль</b>\n\n"
+        f"🆔 ID: <code>{u['telegram_id']}</code>\n"
+        f"👤 Имя: @{u['username'] or 'Не указано'}\n"
+        f"⭐ Баланс: <b>{int(u['balance'])}</b> звезд ({balance_rub} ₽)\n"
+        f"📅 Зарегистрирован: {u['created_at'].strftime('%d.%m.%Y')}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+        ]),
+        parse_mode="HTML"
+    )
     await c.answer()
 
 @dp.callback_query(F.data == "purchases")
@@ -256,8 +377,17 @@ async def purchases(c: CallbackQuery):
     kb = []
     
     for r in rows:
-        text += f"#{r['id']} — {r['name']}\n📞 {r['phone']}\n⭐ {int(r['amount'])} звезд\n📅 {r['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
-        kb.append([InlineKeyboardButton(text=f"📩 Получить код для {r['name']}", callback_data=f"get_code:{r['phone']}")])
+        price_rub = stars_to_rub(int(r['amount']))
+        text += (
+            f"#{r['id']} — {r['name']}\n"
+            f"📞 {r['phone']}\n"
+            f"💵 {price_rub} ₽\n"
+            f"📅 {r['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        )
+        kb.append([InlineKeyboardButton(
+            text=f"📩 Получить код для {r['name']}",
+            callback_data=f"get_code:{r['phone']}"
+        )])
     
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home")])
     
@@ -266,9 +396,14 @@ async def purchases(c: CallbackQuery):
 
 @dp.callback_query(F.data == "support")
 async def support(c: CallbackQuery):
-    await c.message.edit_text("🆘 <b>Поддержка</b>\n\nПо всем вопросам обращайтесь к администратору.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-    ]), parse_mode="HTML")
+    await c.message.edit_text(
+        "🆘 <b>Поддержка</b>\n\n"
+        "По всем вопросам обращайтесь к администратору.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+        ]),
+        parse_mode="HTML"
+    )
     await c.answer()
 
 @dp.callback_query(F.data == "home")
@@ -276,65 +411,121 @@ async def home(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
     
     if admin(c.from_user.id):
-        await c.message.edit_text(f"🛍 <b>{SHOP_NAME}</b>\n\n👑 Админ-панель", reply_markup=admin_kb(), parse_mode="HTML")
+        await c.message.edit_text(
+            f"🛍 <b>{SHOP_NAME}</b>\n\n👑 Админ-панель",
+            reply_markup=admin_kb(),
+            parse_mode="HTML"
+        )
     else:
-        await c.message.edit_text(f"🛍 <b>{SHOP_NAME}</b>\n\n⭐ Баланс: {int(u['balance'])} звезд\n\nГлавное меню:", reply_markup=main_kb(), parse_mode="HTML")
+        balance_rub = stars_to_rub(int(u["balance"]))
+        await c.message.edit_text(
+            f"🛍 <b>{SHOP_NAME}</b>\n\n"
+            f"⭐ Баланс: {int(u['balance'])} звезд ({balance_rub} ₽)\n\n"
+            f"Главное меню:",
+            reply_markup=main_kb(),
+            parse_mode="HTML"
+        )
     await c.answer()
 
-# ============== ПОПОЛНЕНИЕ (только звезды, от 3) ==============
+# ============== ПОПОЛНЕНИЕ ==============
 
 @dp.callback_query(F.data == "deposit")
 async def deposit(c: CallbackQuery):
+    """Меню пополнения"""
+    await update_crypto_rates()
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ 3 звезды", callback_data="deposit:3"),
-         InlineKeyboardButton(text="⭐ 5 звезд", callback_data="deposit:5")],
-        [InlineKeyboardButton(text="⭐ 10 звезд", callback_data="deposit:10"),
-         InlineKeyboardButton(text="⭐ 25 звезд", callback_data="deposit:25")],
-        [InlineKeyboardButton(text="⭐ 50 звезд", callback_data="deposit:50"),
-         InlineKeyboardButton(text="⭐ 100 звезд", callback_data="deposit:100")],
-        [InlineKeyboardButton(text="⭐ Другая сумма", callback_data="deposit_custom")],
+        [InlineKeyboardButton(text="⭐ Пополнить звездами (Telegram)", callback_data="deposit_stars")],
+        [InlineKeyboardButton(text="💰 Пополнить криптовалютой", callback_data="deposit_crypto")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
     ])
     
-    await c.message.edit_text("⭐ <b>Пополнение баланса</b>\n\nВыберите количество звезд для покупки:\n\nМинимальная сумма: 3 звезды", reply_markup=kb, parse_mode="HTML")
+    await c.message.edit_text(
+        f"💳 <b>Пополнение баланса</b>\n\n"
+        f"Выберите способ пополнения:\n\n"
+        f"⭐ 1 звезда = {STAR_TO_RUB} ₽\n"
+        f"💰 1 USDT ≈ {usdt_to_rub} ₽\n"
+        f"₿ 1 BTC ≈ {btc_to_rub:,} ₽\n"
+        f"Ξ 1 ETH ≈ {eth_to_rub:,} ₽\n"
+        f"🔷 1 TON ≈ {ton_to_rub} ₽\n"
+        f"📊 Курсы обновлены автоматически",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
     await c.answer()
 
-@dp.callback_query(F.data == "deposit_custom")
-async def deposit_custom(c: CallbackQuery, state: FSMContext):
+# ============== ПОПОЛНЕНИЕ ЗВЕЗДАМИ ==============
+
+@dp.callback_query(F.data == "deposit_stars")
+async def deposit_stars(c: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ 10 звезд (10 ₽)", callback_data="deposit_stars:10"),
+         InlineKeyboardButton(text="⭐ 25 звезд (25 ₽)", callback_data="deposit_stars:25")],
+        [InlineKeyboardButton(text="⭐ 50 звезд (50 ₽)", callback_data="deposit_stars:50"),
+         InlineKeyboardButton(text="⭐ 100 звезд (100 ₽)", callback_data="deposit_stars:100")],
+        [InlineKeyboardButton(text="⭐ 500 звезд (500 ₽)", callback_data="deposit_stars:500"),
+         InlineKeyboardButton(text="⭐ 1000 звезд (1000 ₽)", callback_data="deposit_stars:1000")],
+        [InlineKeyboardButton(text="⭐ Другая сумма", callback_data="deposit_stars_custom")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="deposit")]
+    ])
+    
+    await c.message.edit_text(
+        f"⭐ <b>Пополнение звездами</b>\n\n"
+        f"Выберите количество звезд:\n"
+        f"1 звезда = {STAR_TO_RUB} ₽\n\n"
+        f"Минимальная сумма: 3 звезды (3 ₽)",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    await c.answer()
+
+@dp.callback_query(F.data == "deposit_stars_custom")
+async def deposit_stars_custom(c: CallbackQuery, state: FSMContext):
     await state.set_state(Form.deposit_amount)
-    await c.message.edit_text("⭐ <b>Введите количество звезд</b>\n\nМинимум: 3 звезды\n\nПример: 15", parse_mode="HTML")
+    await c.message.edit_text(
+        f"⭐ <b>Введите сумму в рублях</b>\n\n"
+        f"1 звезда = {STAR_TO_RUB} ₽\n"
+        f"Минимум: 3 ₽ (3 звезды)\n\n"
+        f"Пример: 150",
+        parse_mode="HTML"
+    )
     await c.answer()
 
 @dp.message(Form.deposit_amount)
 async def process_deposit_amount(m: Message, state: FSMContext):
     try:
-        stars = int(m.text.strip())
+        rub = int(m.text.strip())
+        if rub < 3:
+            return await m.answer(f"❌ Минимальная сумма: 3 ₽")
+        
+        stars = rub_to_stars(rub)
         if stars < 3:
-            return await m.answer("❌ Минимальная сумма: 3 звезды")
+            return await m.answer(f"❌ Минимум 3 звезды (3 ₽)")
         
         await state.clear()
-        await create_stars_payment(m, stars)
+        await create_stars_payment(m, stars, rub)
         
     except ValueError:
-        await m.answer("❌ Введите число (например: 15)")
+        await m.answer("❌ Введите число (например: 150)")
 
-@dp.callback_query(F.data.startswith("deposit:"))
-async def deposit_amount(c: CallbackQuery):
+@dp.callback_query(F.data.startswith("deposit_stars:"))
+async def deposit_stars_amount(c: CallbackQuery):
     stars = int(c.data.split(":")[1])
-    await create_stars_payment(c, stars)
+    rub = stars_to_rub(stars)
+    await create_stars_payment(c, stars, rub)
     await c.answer()
 
-async def create_stars_payment(event, stars: int):
+async def create_stars_payment(event, stars: int, rub: int):
     if isinstance(event, CallbackQuery):
         user_id = event.from_user.id
     else:
         user_id = event.from_user.id
     
     title = f"Пополнение баланса на {stars} ⭐"
-    description = f"Покупка {stars} звезд для магазина аккаунтов"
+    description = f"Покупка {stars} звезд ({rub} ₽)"
     payload = f"deposit_{user_id}_{stars}"
     
-    prices = [LabeledPrice(label="⭐ Звезды", amount=stars)]
+    prices = [LabeledPrice(label=f"⭐ {stars} звезд", amount=stars)]
     
     try:
         await bot.send_invoice(
@@ -353,12 +544,262 @@ async def create_stars_payment(event, stars: int):
         )
         
         if isinstance(event, CallbackQuery):
-            await event.message.edit_text(f"⭐ <b>Оплата звездами</b>\n\nСумма: {stars} звезд\n\nОтправлен счет на оплату!", parse_mode="HTML")
+            await event.message.edit_text(
+                f"⭐ <b>Оплата звездами</b>\n\n"
+                f"Сумма: {stars} звезд ({rub} ₽)\n\n"
+                f"Отправлен счет на оплату!",
+                parse_mode="HTML"
+            )
         
     except Exception as e:
         logger.error(f"Ошибка создания платежа: {e}")
         if isinstance(event, CallbackQuery):
             await event.message.answer(f"❌ Ошибка: {str(e)}")
+
+# ============== ПОПОЛНЕНИЕ КРИПТОВАЛЮТОЙ ==============
+
+@dp.callback_query(F.data == "deposit_crypto")
+async def deposit_crypto(c: CallbackQuery):
+    """Меню пополнения криптовалютой"""
+    await update_crypto_rates()
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💰 100 ₽ (~{rub_to_usdt(100)} USDT)", callback_data="crypto_rub:100"),
+         InlineKeyboardButton(text=f"💰 300 ₽ (~{rub_to_usdt(300)} USDT)", callback_data="crypto_rub:300")],
+        [InlineKeyboardButton(text=f"💰 500 ₽ (~{rub_to_usdt(500)} USDT)", callback_data="crypto_rub:500"),
+         InlineKeyboardButton(text=f"💰 1000 ₽ (~{rub_to_usdt(1000)} USDT)", callback_data="crypto_rub:1000")],
+        [InlineKeyboardButton(text=f"💰 5000 ₽ (~{rub_to_usdt(5000)} USDT)", callback_data="crypto_rub:5000")],
+        [InlineKeyboardButton(text="💰 Другая сумма", callback_data="crypto_custom")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="deposit")]
+    ])
+    
+    await c.message.edit_text(
+        f"💰 <b>Пополнение криптовалютой</b>\n\n"
+        f"Выберите сумму в рублях:\n\n"
+        f"💵 1 USDT = {usdt_to_rub} ₽\n"
+        f"₿ 1 BTC = {btc_to_rub:,} ₽\n"
+        f"Ξ 1 ETH = {eth_to_rub:,} ₽\n"
+        f"🔷 1 TON = {ton_to_rub} ₽\n\n"
+        f"⭐ 1 звезда = {STAR_TO_RUB} ₽\n"
+        f"Минимальная сумма: 100 ₽",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    await c.answer()
+
+@dp.callback_query(F.data == "crypto_custom")
+async def crypto_custom(c: CallbackQuery, state: FSMContext):
+    await state.set_state(Form.deposit_crypto_rub)
+    await c.message.edit_text(
+        f"💰 <b>Введите сумму в рублях</b>\n\n"
+        f"Курсы:\n"
+        f"💵 1 USDT = {usdt_to_rub} ₽\n"
+        f"₿ 1 BTC = {btc_to_rub:,} ₽\n"
+        f"Ξ 1 ETH = {eth_to_rub:,} ₽\n"
+        f"🔷 1 TON = {ton_to_rub} ₽\n\n"
+        f"Минимальная сумма: 100 ₽\n"
+        f"Пример: 250",
+        parse_mode="HTML"
+    )
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("crypto_rub:"))
+async def crypto_rub_payment(c: CallbackQuery):
+    """Создает счет на оплату криптовалютой в рублях"""
+    rub = int(c.data.split(":")[1])
+    
+    usdt = rub_to_usdt(rub)
+    stars = rub_to_stars(rub)
+    
+    await show_crypto_payment_methods(c, rub, usdt, stars)
+    await c.answer()
+
+@dp.message(Form.deposit_crypto_rub)
+async def process_crypto_rub_amount(m: Message, state: FSMContext):
+    try:
+        rub = int(m.text.strip())
+        if rub < 100:
+            return await m.answer(f"❌ Минимальная сумма: 100 ₽")
+        
+        usdt = rub_to_usdt(rub)
+        stars = rub_to_stars(rub)
+        
+        await state.clear()
+        await show_crypto_payment_methods(m, rub, usdt, stars)
+        
+    except ValueError:
+        await m.answer("❌ Введите число (например: 250)")
+
+async def show_crypto_payment_methods(event, rub: int, usdt: float, stars: int):
+    """Показывает выбор криптовалюты для оплаты"""
+    
+    btc = rub_to_btc(rub)
+    eth = rub_to_eth(rub)
+    ton = rub_to_ton(rub)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💵 {usdt} USDT", callback_data=f"crypto_pay:USDT:{rub}:{stars}")],
+        [InlineKeyboardButton(text=f"₿ {btc} BTC", callback_data=f"crypto_pay:BTC:{rub}:{stars}")],
+        [InlineKeyboardButton(text=f"Ξ {eth} ETH", callback_data=f"crypto_pay:ETH:{rub}:{stars}")],
+        [InlineKeyboardButton(text=f"🔷 {ton} TON", callback_data=f"crypto_pay:TON:{rub}:{stars}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="deposit_crypto")]
+    ])
+    
+    text = (
+        f"💰 <b>Выберите валюту для оплаты</b>\n\n"
+        f"💵 Сумма: {rub} ₽\n"
+        f"⭐ Получите: {stars} звезд\n\n"
+        f"Выберите криптовалюту:"
+    )
+    
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await event.answer(text, reply_markup=kb, parse_mode="HTML")
+
+# Хранилище для активных счетов
+crypto_invoices = {}
+
+@dp.callback_query(F.data.startswith("crypto_pay:"))
+async def crypto_pay(c: CallbackQuery):
+    """Создает счет в Cryptobot"""
+    parts = c.data.split(":")
+    asset_str = parts[1]
+    rub = int(parts[2])
+    stars = int(parts[3])
+    
+    user_id = c.from_user.id
+    
+    # Конвертируем в нужную валюту
+    if asset_str == "USDT":
+        asset = Asset.USDT
+        amount = rub_to_usdt(rub)
+    elif asset_str == "BTC":
+        asset = Asset.BTC
+        amount = rub_to_btc(rub)
+    elif asset_str == "ETH":
+        asset = Asset.ETH
+        amount = rub_to_eth(rub)
+    elif asset_str == "TON":
+        asset = Asset.TON
+        amount = rub_to_ton(rub)
+    else:
+        return await c.answer("❌ Неизвестная валюта", show_alert=True)
+    
+    try:
+        # Создаем счет в Cryptobot
+        invoice = await crypto.create_invoice(
+            asset=asset,
+            amount=amount,
+            description=f"Пополнение баланса на {stars} ⭐ ({rub} ₽)",
+            hidden_message=f"ID: {user_id}",
+            paid_btn_name="callback",
+            paid_btn_url="https://t.me/your_bot"
+        )
+        
+        # Сохраняем информацию о счете
+        crypto_invoices[invoice.invoice_id] = {
+            'user_id': user_id,
+            'stars': stars,
+            'rub': rub,
+            'amount': amount,
+            'asset': asset_str
+        }
+        
+        # Создаем клавиатуру с ссылкой на оплату
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"💳 Оплатить {amount} {asset_str}", 
+                url=invoice.pay_url
+            )],
+            [InlineKeyboardButton(
+                text="🔄 Проверить оплату", 
+                callback_data=f"check_crypto:{invoice.invoice_id}"
+            )],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="deposit")]
+        ])
+        
+        text = (
+            f"💰 <b>Счет на оплату</b>\n\n"
+            f"💵 Сумма: {rub} ₽\n"
+            f"🪙 {amount} {asset_str}\n"
+            f"⭐ Получите: {stars} звезд\n\n"
+            f"📤 Нажмите кнопку ниже, чтобы оплатить\n"
+            f"⏳ Счет действителен 1 час\n\n"
+            f"После оплаты нажмите 'Проверить оплату'"
+        )
+        
+        await c.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"Ошибка создания счета: {e}")
+        await c.message.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.callback_query(F.data.startswith("check_crypto:"))
+async def check_crypto_payment(c: CallbackQuery):
+    """Проверяет статус оплаты"""
+    invoice_id = int(c.data.split(":")[1])
+    
+    if invoice_id not in crypto_invoices:
+        return await c.answer("❌ Счет не найден", show_alert=True)
+    
+    invoice_data = crypto_invoices[invoice_id]
+    user_id = invoice_data['user_id']
+    
+    if c.from_user.id != user_id:
+        return await c.answer("❌ Это не ваш счет", show_alert=True)
+    
+    try:
+        # Проверяем статус счета
+        invoice = await crypto.get_invoices(invoice_ids=[invoice_id])
+        
+        if invoice and invoice.status == InvoiceStatus.PAID:
+            stars = invoice_data['stars']
+            rub = invoice_data['rub']
+            
+            success = await db.change_balance(user_id, Decimal(stars))
+            
+            if success:
+                await db.add_transaction(
+                    user_id, 
+                    stars, 
+                    "deposit_crypto", 
+                    f"Пополнение на {stars} звезд ({rub} ₽ / {invoice_data['amount']} {invoice_data['asset']})"
+                )
+                
+                del crypto_invoices[invoice_id]
+                
+                await c.message.edit_text(
+                    f"✅ <b>Оплата подтверждена!</b>\n\n"
+                    f"⭐ Начислено: {stars} звезд\n"
+                    f"💰 Сумма: {rub} ₽ ({invoice_data['amount']} {invoice_data['asset']})\n\n"
+                    f"Теперь ты можешь купить аккаунты!",
+                    parse_mode="HTML"
+                )
+                
+                await c.answer("✅ Баланс пополнен!", show_alert=True)
+                
+                for admin_id in ADMIN_IDS:
+                    await bot.send_message(
+                        admin_id,
+                        f"💰 <b>Пополнение криптовалютой</b>\n\n"
+                        f"👤 Пользователь: @{c.from_user.username or c.from_user.id}\n"
+                        f"💵 Сумма: {rub} ₽ ({invoice_data['amount']} {invoice_data['asset']})\n"
+                        f"⭐ Начислено: {stars} звезд\n"
+                        f"🆔 ID: {user_id}",
+                        parse_mode="HTML"
+                    )
+            else:
+                await c.answer("❌ Ошибка начисления баланса", show_alert=True)
+                
+        else:
+            await c.answer("⏳ Счет еще не оплачен. Попробуйте позже.", show_alert=True)
+            
+    except Exception as e:
+        logger.error(f"Ошибка проверки оплаты: {e}")
+        await c.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
+# ============== ПЛАТЕЖИ TELEGRAM STARS ==============
 
 @dp.pre_checkout_query()
 async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
@@ -397,15 +838,29 @@ async def successful_payment(m: Message):
             logger.warning(f"Платеж от другого пользователя: {m.from_user.id} != {user_id}")
             return
         
+        rub = stars_to_rub(stars)
         success = await db.change_balance(user_id, Decimal(stars))
         
         if success:
-            await db.add_transaction(user_id, stars, "deposit", f"Пополнение на {stars} звезд")
+            await db.add_transaction(user_id, stars, "deposit", f"Пополнение на {stars} звезд ({rub} ₽)")
             
-            await m.answer(f"✅ <b>Баланс пополнен!</b>\n\n⭐ Начислено: {stars} звезд\n\nТеперь ты можешь купить аккаунты в магазине!", parse_mode="HTML")
+            await m.answer(
+                f"✅ <b>Баланс пополнен!</b>\n\n"
+                f"⭐ Начислено: {stars} звезд\n"
+                f"💵 Сумма: {rub} ₽\n\n"
+                f"Теперь ты можешь купить аккаунты в магазине!",
+                parse_mode="HTML"
+            )
             
             for admin_id in ADMIN_IDS:
-                await bot.send_message(admin_id, f"💰 <b>Пополнение баланса</b>\n\n👤 Пользователь: @{m.from_user.username or m.from_user.id}\n⭐ Сумма: {stars} звезд\n🆔 ID: {user_id}", parse_mode="HTML")
+                await bot.send_message(
+                    admin_id,
+                    f"💰 <b>Пополнение баланса</b>\n\n"
+                    f"👤 Пользователь: @{m.from_user.username or m.from_user.id}\n"
+                    f"⭐ Сумма: {stars} звезд ({rub} ₽)\n"
+                    f"🆔 ID: {user_id}",
+                    parse_mode="HTML"
+                )
         else:
             await m.answer("❌ Ошибка начисления баланса. Обратитесь к администратору.")
             
@@ -472,7 +927,12 @@ async def a_country_view(c: CallbackQuery):
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="a_country_menu")]
     ])
     
-    await c.message.edit_text(f"🌍 <b>{country['emoji']} {country['name']}</b>\n\nАккаунтов в стране: {await db.count_country_accounts(country_id)}", reply_markup=kb, parse_mode="HTML")
+    await c.message.edit_text(
+        f"🌍 <b>{country['emoji']} {country['name']}</b>\n\n"
+        f"Аккаунтов в стране: {await db.count_country_accounts(country_id)}",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
     await c.answer()
 
 @dp.callback_query(F.data.startswith("a_country_edit:"))
@@ -537,7 +997,8 @@ async def a_accounts_list(c: CallbackQuery):
     
     for a in rows:
         status_emoji = "🟢" if a['status'] == 'available' else "🔴"
-        text += f"{status_emoji} #{a['id']} {a['name']} — {int(a['price'])} ⭐\n📞 {a['phone']}\n\n"
+        price_rub = stars_to_rub(int(a['price']))
+        text += f"{status_emoji} #{a['id']} {a['name']} — {price_rub} ₽\n📞 {a['phone']}\n\n"
         kb.append([InlineKeyboardButton(text=f"📱 {a['name']}", callback_data=f"a_account_view:{a['id']}")])
     
     kb.append([InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="a_account")])
@@ -558,12 +1019,13 @@ async def a_account_view(c: CallbackQuery):
     status_emoji = "🟢" if a['status'] == 'available' else "🔴"
     country = await db.get_country(a['country_id'])
     country_name = f"{country['emoji']} {country['name']}" if country else "❌ Не указана"
+    price_rub = stars_to_rub(int(a['price']))
     
     text = f"📱 <b>{a['name']}</b>\n\n"
     text += f"🆔 ID: {a['id']}\n"
     text += f"📞 Телефон: <code>{a['phone']}</code>\n"
     text += f"🌍 Страна: {country_name}\n"
-    text += f"⭐ Цена: {int(a['price'])} звезд\n"
+    text += f"⭐ Цена: {int(a['price'])} звезд ({price_rub} ₽)\n"
     text += f"📝 Описание: {a['description'] or 'Нет'}\n"
     text += f"📊 Статус: {status_emoji} {a['status']}\n"
     
@@ -606,25 +1068,26 @@ async def a_edit_price(c: CallbackQuery, state: FSMContext):
     account_id = int(c.data.split(":")[1])
     await state.update_data(edit_account_id=account_id)
     await state.set_state(Form.edit_account_price)
-    await c.message.edit_text("✏️ <b>Введите новую цену в звездах</b>\n\nПример: 50", parse_mode="HTML")
+    await c.message.edit_text("✏️ <b>Введите новую цену в рублях</b>\n\nПример: 50", parse_mode="HTML")
     await c.answer()
 
 @dp.message(Form.edit_account_price)
 async def edit_account_price(m: Message, state: FSMContext):
     try:
-        price = int(m.text.strip())
-        if price <= 0:
+        rub = int(m.text.strip())
+        if rub <= 0:
             raise ValueError
     except:
         await m.answer("❌ Введите число больше 0")
         return
     
+    stars = rub_to_stars(rub)
     data = await state.get_data()
     account_id = data.get('edit_account_id')
     
-    await db.update_account_price(account_id, price)
+    await db.update_account_price(account_id, stars)
     await state.clear()
-    await m.answer(f"✅ Цена обновлена! Теперь: {price} ⭐", reply_markup=admin_kb())
+    await m.answer(f"✅ Цена обновлена! Теперь: {rub} ₽ ({stars} ⭐)", reply_markup=admin_kb())
 
 # Редактирование описания
 @dp.callback_query(F.data.startswith("a_edit_desc:"))
@@ -728,7 +1191,15 @@ async def add_country_select(c: CallbackQuery, state: FSMContext):
     await state.update_data(country_id=country_id)
     await state.set_state(Form.add_phone)
     
-    await c.message.edit_text("📱 <b>Введите номер телефона</b>\n\nПоддерживаются любые форматы:\n+7XXXXXXXXXX (Россия)\n+1XXXXXXXXXX (США)\n+380XXXXXXXXX (Украина)\n\nПример: +79123456789", parse_mode="HTML")
+    await c.message.edit_text(
+        "📱 <b>Введите номер телефона</b>\n\n"
+        "Поддерживаются любые форматы:\n"
+        "+7XXXXXXXXXX (Россия)\n"
+        "+1XXXXXXXXXX (США)\n"
+        "+380XXXXXXXXX (Украина)\n\n"
+        "Пример: +79123456789",
+        parse_mode="HTML"
+    )
     await c.answer()
 
 @dp.message(Form.add_phone)
@@ -833,22 +1304,28 @@ async def add_name(m: Message, state: FSMContext):
     await state.update_data(name=name)
     await state.set_state(Form.add_price)
     
-    await m.answer(f"💰 <b>Введите цену в звездах</b>\n\nАккаунт: {name}\n\nПример: 50", parse_mode="HTML")
+    await m.answer(f"💰 <b>Введите цену в рублях</b>\n\nАккаунт: {name}\n1 ₽ = 1 ⭐\n\nПример: 50", parse_mode="HTML")
 
 @dp.message(Form.add_price)
 async def add_price(m: Message, state: FSMContext):
     try:
-        price = int(m.text.strip())
-        if price <= 0:
+        rub = int(m.text.strip())
+        if rub <= 0:
             raise ValueError("Цена должна быть больше 0")
     except:
         await m.answer("❌ Введите число больше 0\n\nПример: 50")
         return
     
-    await state.update_data(price=price)
+    stars = rub_to_stars(rub)
+    await state.update_data(price=stars)
     await state.set_state(Form.add_description)
     
-    await m.answer(f"📝 <b>Введите описание аккаунта</b>\n\nЦена: {price} звезд\n\nОпишите аккаунт (можно пропустить, отправьте '-'):", parse_mode="HTML")
+    await m.answer(
+        f"📝 <b>Введите описание аккаунта</b>\n\n"
+        f"Цена: {rub} ₽ ({stars} ⭐)\n\n"
+        f"Опишите аккаунт (можно пропустить, отправьте '-'):",
+        parse_mode="HTML"
+    )
 
 @dp.message(Form.add_description)
 async def add_description(m: Message, state: FSMContext):
@@ -861,6 +1338,7 @@ async def add_description(m: Message, state: FSMContext):
     name = data.get('name')
     price = data.get('price')
     country_id = data.get('country_id')
+    price_rub = stars_to_rub(price)
     
     try:
         path = session_path(phone)
@@ -881,7 +1359,15 @@ async def add_description(m: Message, state: FSMContext):
         
         await state.clear()
         
-        await m.answer(f"✅ <b>Аккаунт добавлен!</b>\n\n📱 Название: {name}\n📞 Телефон: {phone}\n⭐ Цена: {price} звезд\n📝 Описание: {description or 'Нет'}\n\nАккаунт появился в магазине!", parse_mode="HTML")
+        await m.answer(
+            f"✅ <b>Аккаунт добавлен!</b>\n\n"
+            f"📱 Название: {name}\n"
+            f"📞 Телефон: {phone}\n"
+            f"💵 Цена: {price_rub} ₽ ({price} ⭐)\n"
+            f"📝 Описание: {description or 'Нет'}\n\n"
+            f"Аккаунт появился в магазине!",
+            parse_mode="HTML"
+        )
         
     except Exception as e:
         await m.answer(f"❌ Ошибка сохранения: {str(e)}")
@@ -901,7 +1387,7 @@ async def balance_user(m: Message, state: FSMContext):
         return await m.answer("❌ Введите числовой ID.")
     await state.update_data(tg_id=int(m.text))
     await state.set_state(Form.balance_amount)
-    await m.answer("⭐ Введите количество звезд (для списания укажите минус):")
+    await m.answer("⭐ Введите количество звезд (для списания укажите минус):\n1 звезда = 1 ₽")
 
 @dp.message(Form.balance_amount)
 async def balance_amount(m: Message, state: FSMContext):
@@ -935,12 +1421,23 @@ async def block_user(m: Message, state: FSMContext):
 async def a_stats(c: CallbackQuery):
     if not admin(c.from_user.id): return
     s = await db.stats()
-    await c.message.edit_text(f"📊 <b>Статистика</b>\n\n👤 Пользователи: {s['users']}\n📱 Аккаунты: {s['accounts']}\n🟢 В продаже: {s['available']}\n🧾 Покупки: {s['purchases']}\n⭐ Оборот: {int(s['revenue'])} звезд", parse_mode="HTML")
+    revenue_rub = stars_to_rub(int(s['revenue']))
+    await c.message.edit_text(
+        f"📊 <b>Статистика</b>\n\n"
+        f"👤 Пользователи: {s['users']}\n"
+        f"📱 Аккаунты: {s['accounts']}\n"
+        f"🟢 В продаже: {s['available']}\n"
+        f"🧾 Покупки: {s['purchases']}\n"
+        f"⭐ Оборот: {int(s['revenue'])} звезд\n"
+        f"💵 Оборот: {revenue_rub} ₽",
+        parse_mode="HTML"
+    )
     await c.answer()
 
 # ============== ЗАПУСК ==============
 
 async def main():
+    await update_crypto_rates()
     await db.init_db()
     await dp.start_polling(bot)
 
