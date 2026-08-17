@@ -1,27 +1,33 @@
 import asyncio
 from decimal import Decimal
 from pathlib import Path
-import json
 import logging
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery, ShippingQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.types import SuccessfulPayment
-from aiogram.utils.i18n import gettext as _
 
 import db
 from config import BOT_TOKEN, ADMIN_IDS, SHOP_NAME, CURRENCY, STAR_TO_RUB
 from telethon_manager import (
-    connect_session, session_path, start_listening, 
-    get_code_for_account, wait_for_code, is_authorized
+    connect_session, 
+    session_path, 
+    start_listening, 
+    get_code_for_account, 
+    wait_for_code, 
+    is_authorized,
+    disconnect_session,
+    close_all
 )
 
 logger = logging.getLogger(__name__)
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
+
+# ... остальной код бота ...
 
 # Цены в звездах (Telegram Stars)
 PRICES = {
