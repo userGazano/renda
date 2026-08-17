@@ -8,7 +8,7 @@ TELEGRAM_API_HASH = "6aa1f649d2a6b3a308bc27aed9e6de29"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 SESSIONS_DIR = "sessions"
 CURRENCY = "⭐"  # Меняем на звезды
-SHOP_NAME = "FunSim Shop"
+SHOP_NAME = "Dolphy shop"
 
 # Курс: 1 звезда = X рублей (можно менять)
 STAR_TO_RUB = 2  # 1 звезда = 10 рублей
