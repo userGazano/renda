@@ -108,11 +108,29 @@ async def countries():
     async with pool.acquire() as c:
         return await c.fetch("SELECT * FROM countries WHERE active ORDER BY id")
 
+async def get_country(country_id):
+    async with pool.acquire() as c:
+        return await c.fetchrow("SELECT * FROM countries WHERE id=$1", country_id)
+
 async def add_country(name, emoji):
     async with pool.acquire() as c:
         return await c.fetchrow(
             "INSERT INTO countries(name,emoji) VALUES($1,$2) RETURNING *",
             name, emoji)
+
+async def update_country(country_id, name, emoji):
+    async with pool.acquire() as c:
+        await c.execute(
+            "UPDATE countries SET name=$1, emoji=$2 WHERE id=$3",
+            name, emoji, country_id)
+
+async def delete_country(country_id):
+    async with pool.acquire() as c:
+        await c.execute("DELETE FROM countries WHERE id=$1", country_id)
+
+async def count_country_accounts(country_id):
+    async with pool.acquire() as c:
+        return await c.fetchval("SELECT COUNT(*) FROM accounts WHERE country_id=$1", country_id)
 
 async def get_country_accounts(country_id):
     async with pool.acquire() as c:
@@ -121,6 +139,10 @@ async def get_country_accounts(country_id):
         WHERE country_id=$1 AND status='available' 
         ORDER BY id
         """, country_id)
+
+async def all_accounts():
+    async with pool.acquire() as c:
+        return await c.fetch("SELECT * FROM accounts ORDER BY id")
 
 async def account(account_id):
     async with pool.acquire() as c:
@@ -136,6 +158,26 @@ async def add_account(country_id, phone, name, description, price, session_path)
         INSERT INTO accounts(country_id, phone, name, description, price, session_path)
         VALUES($1,$2,$3,$4,$5,$6) RETURNING *
         """, country_id, phone, name, description, price, session_path)
+
+async def update_account_name(account_id, name):
+    async with pool.acquire() as c:
+        await c.execute("UPDATE accounts SET name=$1 WHERE id=$2", name, account_id)
+
+async def update_account_price(account_id, price):
+    async with pool.acquire() as c:
+        await c.execute("UPDATE accounts SET price=$1 WHERE id=$2", price, account_id)
+
+async def update_account_description(account_id, description):
+    async with pool.acquire() as c:
+        await c.execute("UPDATE accounts SET description=$1 WHERE id=$2", description, account_id)
+
+async def update_account_country(account_id, country_id):
+    async with pool.acquire() as c:
+        await c.execute("UPDATE accounts SET country_id=$1 WHERE id=$2", country_id, account_id)
+
+async def delete_account(account_id):
+    async with pool.acquire() as c:
+        await c.execute("DELETE FROM accounts WHERE id=$1", account_id)
 
 async def buy_account(tg_id, account_id):
     async with pool.acquire() as c:
