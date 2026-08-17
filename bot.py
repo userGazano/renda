@@ -32,7 +32,6 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 class Form(StatesGroup):
-    # Для добавления аккаунта
     add_phone = State()
     add_code = State()
     add_2fa = State()
@@ -40,11 +39,7 @@ class Form(StatesGroup):
     add_price = State()
     add_description = State()
     add_country = State()
-    
-    # Для пополнения
     deposit_amount = State()
-    
-    # Для админа
     balance_user = State()
     balance_amount = State()
     block_user = State()
@@ -52,11 +47,16 @@ class Form(StatesGroup):
 def admin(uid): return uid in ADMIN_IDS
 
 def format_phone(phone: str) -> str:
-    """Форматирует номер телефона"""
     phone = re.sub(r'[^0-9+]', '', phone)
     if not phone.startswith('+'):
         phone = '+' + phone
     return phone
+
+def rub_to_stars(rub: int) -> int:
+    return int(rub / STAR_TO_RUB)
+
+def stars_to_rub(stars: int) -> int:
+    return stars * STAR_TO_RUB
 
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -86,17 +86,14 @@ async def start(m: Message):
     
     if admin(m.from_user.id):
         await m.answer(
-            f"🛍 <b>{SHOP_NAME}</b>\n\n"
-            f"👑 Админ-панель",
+            f"🛍 <b>{SHOP_NAME}</b>\n\n👑 Админ-панель",
             reply_markup=admin_kb(),
             parse_mode="HTML"
         )
     else:
         balance_rub = int(u["balance"]) * STAR_TO_RUB
         await m.answer(
-            f"🛍 <b>{SHOP_NAME}</b>\n\n"
-            f"⭐ Баланс: {int(u['balance'])} звезд (~{balance_rub} ₽)\n\n"
-            f"Главное меню:",
+            f"🛍 <b>{SHOP_NAME}</b>\n\n⭐ Баланс: {int(u['balance'])} звезд (~{balance_rub} ₽)\n\nГлавное меню:",
             reply_markup=main_kb(),
             parse_mode="HTML"
         )
@@ -104,11 +101,9 @@ async def start(m: Message):
 @dp.message(Command("admin"))
 async def admin_cmd(m: Message):
     if admin(m.from_user.id):
-        await m.answer(
-            "⚙️ <b>Админ-панель</b>",
-            reply_markup=admin_kb(),
-            parse_mode="HTML"
-        )
+        await m.answer("⚙️ <b>Админ-панель</b>", reply_markup=admin_kb(), parse_mode="HTML")
+    else:
+        await m.answer("❌ У вас нет доступа")
 
 # ============== СТРАНЫ ==============
 
@@ -117,16 +112,9 @@ async def countries(c: CallbackQuery):
     rows = await db.countries()
     kb = []
     for r in rows:
-        kb.append([InlineKeyboardButton(
-            text=f"{r['emoji']} {r['name']}", 
-            callback_data=f"country:{r['id']}"
-        )])
+        kb.append([InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"country:{r['id']}")])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home")])
-    await c.message.edit_text(
-        "🌍 <b>Выберите страну:</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-        parse_mode="HTML"
-    )
+    await c.message.edit_text("🌍 <b>Выберите страну:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await c.answer()
 
 @dp.callback_query(F.data.startswith("country:"))
@@ -136,29 +124,17 @@ async def country_accounts(c: CallbackQuery):
     
     if not rows:
         kb = [[InlineKeyboardButton(text="⬅️ Назад", callback_data="countries")]]
-        await c.message.edit_text(
-            "📭 <b>В этой стране пока нет аккаунтов</b>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-            parse_mode="HTML"
-        )
+        await c.message.edit_text("📭 <b>В этой стране пока нет аккаунтов</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
         await c.answer()
         return
     
     kb = []
     for a in rows:
         price_stars = int(a['price'])
-        price_rub = stars_to_rub(price_stars)
-        kb.append([InlineKeyboardButton(
-            text=f"📱 {a['name']} — {price_stars} {CURRENCY}",
-            callback_data=f"account:{a['id']}"
-        )])
+        kb.append([InlineKeyboardButton(text=f"📱 {a['name']} — {price_stars} {CURRENCY}", callback_data=f"account:{a['id']}")])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="countries")])
     
-    await c.message.edit_text(
-        f"📱 <b>Аккаунты в выбранной стране:</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-        parse_mode="HTML"
-    )
+    await c.message.edit_text("📱 <b>Аккаунты в выбранной стране:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await c.answer()
 
 # ============== АККАУНТЫ ==============
@@ -173,12 +149,7 @@ async def account_view(c: CallbackQuery):
     price_stars = int(a['price'])
     price_rub = stars_to_rub(price_stars)
     
-    text = (
-        f"📱 <b>{a['name']}</b>\n\n"
-        f"{a['description']}\n\n"
-        f"💵 Цена: <b>{price_stars} {CURRENCY}</b>\n"
-        f"💰 Эквивалент: ~{price_rub} ₽"
-    )
+    text = f"📱 <b>{a['name']}</b>\n\n{a['description']}\n\n💵 Цена: <b>{price_stars} {CURRENCY}</b>\n💰 Эквивалент: ~{price_rub} ₽"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Купить", callback_data=f"buy:{aid}")],
@@ -198,14 +169,7 @@ async def buy(c: CallbackQuery):
     user = await db.get_user(c.from_user.id)
     if user["balance"] < account_data["price"]:
         stars_needed = int(account_data["price"] - user["balance"])
-        return await c.answer(
-            f"❌ Недостаточно звезд!\n\n"
-            f"Нужно: {int(account_data['price'])} ⭐\n"
-            f"У тебя: {int(user['balance'])} ⭐\n"
-            f"Не хватает: {stars_needed} ⭐\n\n"
-            f"Пополни баланс в главном меню!",
-            show_alert=True
-        )
+        return await c.answer(f"❌ Недостаточно звезд!\n\nНужно: {int(account_data['price'])} ⭐\nУ тебя: {int(user['balance'])} ⭐\nНе хватает: {stars_needed} ⭐\n\nПополни баланс в главном меню!", show_alert=True)
     
     purchase, status = await db.buy_account(c.from_user.id, aid)
     
@@ -221,17 +185,7 @@ async def buy(c: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка запуска прослушки: {e}")
     
-    text = (
-        f"✅ <b>Покупка #{purchase}</b>\n\n"
-        f"📱 Аккаунт: {a['name']}\n"
-        f"📞 Номер: <code>{a['phone']}</code>\n"
-        f"⭐ Цена: {int(a['price'])} звезд\n\n"
-        f"📝 {a['description']}\n\n"
-        f"🔐 <b>Чтобы получить код подтверждения:</b>\n"
-        f"1. Открой Telegram на телефоне\n"
-        f"2. Зайди в этот аккаунт\n"
-        f"3. Код придет сюда автоматически"
-    )
+    text = f"✅ <b>Покупка #{purchase}</b>\n\n📱 Аккаунт: {a['name']}\n📞 Номер: <code>{a['phone']}</code>\n⭐ Цена: {int(a['price'])} звезд\n\n📝 {a['description']}\n\n🔐 <b>Чтобы получить код подтверждения:</b>\n1. Открой Telegram на телефоне\n2. Зайди в этот аккаунт\n3. Код придет сюда автоматически"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📩 Получить код", callback_data=f"get_code:{a['phone']}")],
@@ -241,10 +195,7 @@ async def buy(c: CallbackQuery):
     await c.message.answer(text, reply_markup=kb, parse_mode="HTML")
     
     new_balance = await get_user_balance(c.from_user.id)
-    await c.answer(
-        f"✅ Покупка успешна! Остаток: {int(new_balance)} ⭐",
-        show_alert=True
-    )
+    await c.answer(f"✅ Покупка успешна! Остаток: {int(new_balance)} ⭐", show_alert=True)
 
 # ============== ПОЛУЧЕНИЕ КОДА ==============
 
@@ -268,23 +219,10 @@ async def get_code(c: CallbackQuery):
     code = await wait_for_code(phone, timeout=120)
     
     if code:
-        await wait_msg.edit_text(
-            f"✅ <b>Код подтверждения:</b>\n\n"
-            f"<code>{code}</code>\n\n"
-            f"⏱️ Действует 10 минут",
-            parse_mode="HTML"
-        )
+        await wait_msg.edit_text(f"✅ <b>Код подтверждения:</b>\n\n<code>{code}</code>\n\n⏱️ Действует 10 минут", parse_mode="HTML")
         await c.answer("✅ Код получен!", show_alert=True)
     else:
-        await wait_msg.edit_text(
-            "⏰ <b>Код не получен</b>\n\n"
-            "Возможные причины:\n"
-            "• Код не был отправлен в Telegram\n"
-            "• Аккаунт не авторизован\n"
-            "• Истекло время ожидания (2 минуты)\n\n"
-            "Попробуй еще раз через 'Мои покупки'",
-            parse_mode="HTML"
-        )
+        await wait_msg.edit_text("⏰ <b>Код не получен</b>\n\nВозможные причины:\n• Код не был отправлен в Telegram\n• Аккаунт не авторизован\n• Истекло время ожидания (2 минуты)\n\nПопробуй еще раз через 'Мои покупки'", parse_mode="HTML")
         await c.answer("⏰ Время ожидания истекло", show_alert=True)
 
 # ============== ЛИЧНЫЙ КАБИНЕТ ==============
@@ -293,34 +231,19 @@ async def get_code(c: CallbackQuery):
 async def balance(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
     balance_rub = int(u["balance"]) * STAR_TO_RUB
-    await c.message.edit_text(
-        f"⭐ <b>Баланс</b>\n\n"
-        f"Звезд: <b>{int(u['balance'])}</b>\n"
-        f"Рублей: <b>{balance_rub:,}</b> ₽\n\n"
-        f"1 звезда = {STAR_TO_RUB} ₽",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⭐ Пополнить", callback_data="deposit")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-        ]),
-        parse_mode="HTML"
-    )
+    await c.message.edit_text(f"⭐ <b>Баланс</b>\n\nЗвезд: <b>{int(u['balance'])}</b>\nРублей: <b>{balance_rub:,}</b> ₽\n\n1 звезда = {STAR_TO_RUB} ₽", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Пополнить", callback_data="deposit")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+    ]), parse_mode="HTML")
     await c.answer()
 
 @dp.callback_query(F.data == "profile")
 async def profile(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
     balance_rub = int(u["balance"]) * STAR_TO_RUB
-    await c.message.edit_text(
-        f"👤 <b>Профиль</b>\n\n"
-        f"🆔 ID: <code>{u['telegram_id']}</code>\n"
-        f"👤 Имя: @{u['username'] or 'Не указано'}\n"
-        f"⭐ Баланс: <b>{int(u['balance'])}</b> звезд (~{balance_rub} ₽)\n"
-        f"📅 Зарегистрирован: {u['created_at'].strftime('%d.%m.%Y')}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-        ]),
-        parse_mode="HTML"
-    )
+    await c.message.edit_text(f"👤 <b>Профиль</b>\n\n🆔 ID: <code>{u['telegram_id']}</code>\n👤 Имя: @{u['username'] or 'Не указано'}\n⭐ Баланс: <b>{int(u['balance'])}</b> звезд (~{balance_rub} ₽)\n📅 Зарегистрирован: {u['created_at'].strftime('%d.%m.%Y')}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+    ]), parse_mode="HTML")
     await c.answer()
 
 @dp.callback_query(F.data == "purchases")
@@ -329,13 +252,9 @@ async def purchases(c: CallbackQuery):
     
     if not rows:
         text = "🧾 У тебя пока нет покупок."
-        await c.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-            ]),
-            parse_mode="HTML"
-        )
+        await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+        ]), parse_mode="HTML")
         await c.answer()
         return
     
@@ -344,36 +263,19 @@ async def purchases(c: CallbackQuery):
     
     for r in rows:
         price_rub = stars_to_rub(int(r['amount']))
-        text += (
-            f"#{r['id']} — {r['name']}\n"
-            f"📞 {r['phone']}\n"
-            f"⭐ {int(r['amount'])} звезд (~{price_rub} ₽)\n"
-            f"📅 {r['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
-        )
-        kb.append([InlineKeyboardButton(
-            text=f"📩 Получить код для {r['name']}",
-            callback_data=f"get_code:{r['phone']}"
-        )])
+        text += f"#{r['id']} — {r['name']}\n📞 {r['phone']}\n⭐ {int(r['amount'])} звезд (~{price_rub} ₽)\n📅 {r['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        kb.append([InlineKeyboardButton(text=f"📩 Получить код для {r['name']}", callback_data=f"get_code:{r['phone']}")])
     
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home")])
     
-    await c.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-        parse_mode="HTML"
-    )
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await c.answer()
 
 @dp.callback_query(F.data == "support")
 async def support(c: CallbackQuery):
-    await c.message.edit_text(
-        "🆘 <b>Поддержка</b>\n\n"
-        "По всем вопросам обращайтесь к администратору.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
-        ]),
-        parse_mode="HTML"
-    )
+    await c.message.edit_text("🆘 <b>Поддержка</b>\n\nПо всем вопросам обращайтесь к администратору.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
+    ]), parse_mode="HTML")
     await c.answer()
 
 @dp.callback_query(F.data == "home")
@@ -381,21 +283,10 @@ async def home(c: CallbackQuery):
     u = await db.get_user(c.from_user.id)
     
     if admin(c.from_user.id):
-        await c.message.edit_text(
-            f"🛍 <b>{SHOP_NAME}</b>\n\n"
-            f"👑 Админ-панель",
-            reply_markup=admin_kb(),
-            parse_mode="HTML"
-        )
+        await c.message.edit_text(f"🛍 <b>{SHOP_NAME}</b>\n\n👑 Админ-панель", reply_markup=admin_kb(), parse_mode="HTML")
     else:
         balance_rub = int(u["balance"]) * STAR_TO_RUB
-        await c.message.edit_text(
-            f"🛍 <b>{SHOP_NAME}</b>\n\n"
-            f"⭐ Баланс: {int(u['balance'])} звезд (~{balance_rub} ₽)\n\n"
-            f"Главное меню:",
-            reply_markup=main_kb(),
-            parse_mode="HTML"
-        )
+        await c.message.edit_text(f"🛍 <b>{SHOP_NAME}</b>\n\n⭐ Баланс: {int(u['balance'])} звезд (~{balance_rub} ₽)\n\nГлавное меню:", reply_markup=main_kb(), parse_mode="HTML")
     await c.answer()
 
 # ============== ПОПОЛНЕНИЕ ==============
@@ -403,39 +294,21 @@ async def home(c: CallbackQuery):
 @dp.callback_query(F.data == "deposit")
 async def deposit(c: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⭐ 10 звезд (100 ₽)", callback_data="deposit:100"),
-            InlineKeyboardButton(text="⭐ 30 звезд (300 ₽)", callback_data="deposit:300")
-        ],
-        [
-            InlineKeyboardButton(text="⭐ 50 звезд (500 ₽)", callback_data="deposit:500"),
-            InlineKeyboardButton(text="⭐ 100 звезд (1000 ₽)", callback_data="deposit:1000")
-        ],
-        [
-            InlineKeyboardButton(text="⭐ Другая сумма", callback_data="deposit_custom")
-        ],
+        [InlineKeyboardButton(text="⭐ 10 звезд (100 ₽)", callback_data="deposit:100"),
+         InlineKeyboardButton(text="⭐ 30 звезд (300 ₽)", callback_data="deposit:300")],
+        [InlineKeyboardButton(text="⭐ 50 звезд (500 ₽)", callback_data="deposit:500"),
+         InlineKeyboardButton(text="⭐ 100 звезд (1000 ₽)", callback_data="deposit:1000")],
+        [InlineKeyboardButton(text="⭐ Другая сумма", callback_data="deposit_custom")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="home")]
     ])
     
-    await c.message.edit_text(
-        "⭐ <b>Пополнение баланса</b>\n\n"
-        "Выберите количество звезд для покупки:\n\n"
-        f"💰 1 звезда = {STAR_TO_RUB} ₽",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
+    await c.message.edit_text(f"⭐ <b>Пополнение баланса</b>\n\nВыберите количество звезд для покупки:\n\n💰 1 звезда = {STAR_TO_RUB} ₽", reply_markup=kb, parse_mode="HTML")
     await c.answer()
 
 @dp.callback_query(F.data == "deposit_custom")
 async def deposit_custom(c: CallbackQuery, state: FSMContext):
     await state.set_state(Form.deposit_amount)
-    await c.message.edit_text(
-        "⭐ <b>Введите сумму в рублях</b>\n\n"
-        f"Минимальная сумма: 100 ₽ (10 звезд)\n"
-        f"1 звезда = {STAR_TO_RUB} ₽\n\n"
-        f"Пример: 250",
-        parse_mode="HTML"
-    )
+    await c.message.edit_text(f"⭐ <b>Введите сумму в рублях</b>\n\nМинимальная сумма: 100 ₽ (10 звезд)\n1 звезда = {STAR_TO_RUB} ₽\n\nПример: 250", parse_mode="HTML")
     await c.answer()
 
 @dp.message(Form.deposit_amount)
@@ -461,12 +334,6 @@ async def deposit_amount(c: CallbackQuery):
     stars = rub_to_stars(amount_rub)
     await create_stars_payment(c, stars, amount_rub)
     await c.answer()
-
-def rub_to_stars(rub: int) -> int:
-    return int(rub / STAR_TO_RUB)
-
-def stars_to_rub(stars: int) -> int:
-    return stars * STAR_TO_RUB
 
 async def create_stars_payment(event, stars: int, amount_rub: int):
     if isinstance(event, CallbackQuery):
@@ -497,12 +364,7 @@ async def create_stars_payment(event, stars: int, amount_rub: int):
         )
         
         if isinstance(event, CallbackQuery):
-            await event.message.edit_text(
-                f"⭐ <b>Оплата звездами</b>\n\n"
-                f"Сумма: {stars} звезд (~{amount_rub} ₽)\n\n"
-                f"Отправлен счет на оплату!",
-                parse_mode="HTML"
-            )
+            await event.message.edit_text(f"⭐ <b>Оплата звездами</b>\n\nСумма: {stars} звезд (~{amount_rub} ₽)\n\nОтправлен счет на оплату!", parse_mode="HTML")
         
     except Exception as e:
         logger.error(f"Ошибка создания платежа: {e}")
@@ -552,23 +414,10 @@ async def successful_payment(m: Message):
         if success:
             await db.add_transaction(user_id, stars, "deposit", f"Пополнение на {stars} звезд ({amount_rub} ₽)")
             
-            await m.answer(
-                f"✅ <b>Баланс пополнен!</b>\n\n"
-                f"⭐ Начислено: {stars} звезд\n"
-                f"💰 Эквивалент: {amount_rub} ₽\n\n"
-                f"Теперь ты можешь купить аккаунты в магазине!",
-                parse_mode="HTML"
-            )
+            await m.answer(f"✅ <b>Баланс пополнен!</b>\n\n⭐ Начислено: {stars} звезд\n💰 Эквивалент: {amount_rub} ₽\n\nТеперь ты можешь купить аккаунты в магазине!", parse_mode="HTML")
             
             for admin_id in ADMIN_IDS:
-                await bot.send_message(
-                    admin_id,
-                    f"💰 <b>Пополнение баланса</b>\n\n"
-                    f"👤 Пользователь: @{m.from_user.username or m.from_user.id}\n"
-                    f"⭐ Сумма: {stars} звезд ({amount_rub} ₽)\n"
-                    f"🆔 ID: {user_id}",
-                    parse_mode="HTML"
-                )
+                await bot.send_message(admin_id, f"💰 <b>Пополнение баланса</b>\n\n👤 Пользователь: @{m.from_user.username or m.from_user.id}\n⭐ Сумма: {stars} звезд ({amount_rub} ₽)\n🆔 ID: {user_id}", parse_mode="HTML")
         else:
             await m.answer("❌ Ошибка начисления баланса. Обратитесь к администратору.")
             
@@ -582,33 +431,21 @@ async def get_user_balance(user_id: int) -> Decimal:
 
 # ============== АДМИНКА ==============
 
-# ---------- СТРАНЫ ----------
-
 @dp.callback_query(F.data == "a_country")
 async def a_country(c: CallbackQuery, state: FSMContext):
     if not admin(c.from_user.id): return
     await state.set_state(Form.add_country)
-    await c.message.answer(
-        "🌍 <b>Добавление страны</b>\n\n"
-        "Введите в формате:\n"
-        "<code>🇺🇸 США</code>\n\n"
-        "Или просто название: США",
-        parse_mode="HTML"
-    )
+    await c.message.answer("🌍 <b>Добавление страны</b>\n\nВведите в формате:\n<code>🇺🇸 США</code>\n\nИли просто название: США", parse_mode="HTML")
     await c.answer()
 
 @dp.message(Form.add_country)
 async def save_country(m: Message, state: FSMContext):
     text = m.text.strip()
-    
-    # Пробуем разобрать эмодзи и название
     emoji = "🌍"
     name = text
     
-    # Если есть эмодзи в начале
     if len(text) > 0:
         first_char = text[0]
-        # Проверяем, является ли первый символ эмодзи
         if re.match(r'[\U0001F000-\U0001FFFF]', first_char):
             parts = text.split(maxsplit=1)
             emoji = parts[0]
@@ -616,19 +453,12 @@ async def save_country(m: Message, state: FSMContext):
     
     await db.add_country(name, emoji)
     await state.clear()
-    await m.answer(
-        f"✅ Страна добавлена!\n\n"
-        f"{emoji} {name}",
-        reply_markup=admin_kb()
-    )
-
-# ---------- ДОБАВЛЕНИЕ АККАУНТА ----------
+    await m.answer(f"✅ Страна добавлена!\n\n{emoji} {name}", reply_markup=admin_kb())
 
 @dp.callback_query(F.data == "a_account")
 async def a_account(c: CallbackQuery, state: FSMContext):
     if not admin(c.from_user.id): return
     
-    # Показываем список стран для выбора
     rows = await db.countries()
     if not rows:
         await c.message.answer("❌ Сначала добавьте страну через 'Страны'")
@@ -637,16 +467,9 @@ async def a_account(c: CallbackQuery, state: FSMContext):
     
     kb = []
     for r in rows:
-        kb.append([InlineKeyboardButton(
-            text=f"{r['emoji']} {r['name']}",
-            callback_data=f"add_country:{r['id']}"
-        )])
+        kb.append([InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"add_country:{r['id']}")])
     
-    await c.message.answer(
-        "🌍 <b>Выберите страну для аккаунта:</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-        parse_mode="HTML"
-    )
+    await c.message.answer("🌍 <b>Выберите страну для аккаунта:</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await c.answer()
 
 @dp.callback_query(F.data.startswith("add_country:"))
@@ -655,20 +478,39 @@ async def add_country_select(c: CallbackQuery, state: FSMContext):
     await state.update_data(country_id=country_id)
     await state.set_state(Form.add_phone)
     
-    await c.message.edit_text(
-        "📱 <b>Введите номер телефона</b>\n\n"
-        "Поддерживаются любые форматы:\n"
-        "+7XXXXXXXXXX (Россия)\n"
-        "+1XXXXXXXXXX (США)\n"
-        "+380XXXXXXXXX (Украина)\n\n"
-        "Пример: +79123456789",
-        parse_mode="HTML"
-    )
+    await c.message.edit_text("📱 <b>Введите номер телефона</b>\n\nПоддерживаются любые форматы:\n+7XXXXXXXXXX (Россия)\n+1XXXXXXXXXX (США)\n+380XXXXXXXXX (Украина)\n\nПример: +79123456789", parse_mode="HTML")
     await c.answer()
 
-c.answer()
-
-
+@dp.message(Form.add_phone)
+async def add_phone(m: Message, state: FSMContext):
+    phone = format_phone(m.text.strip())
+    
+    if len(phone) < 10:
+        await m.answer("❌ Слишком короткий номер. Пример: +79123456789")
+        return
+    
+    exists = await db.account_by_phone(phone)
+    if exists:
+        await m.answer("❌ Аккаунт с таким номером уже существует в базе!")
+        return
+    
+    await state.update_data(phone=phone)
+    await state.set_state(Form.add_code)
+    
+    wait_msg = await m.answer("⏳ Отправка кода подтверждения...")
+    
+    try:
+        success, message = await request_code(phone)
+        
+        if success:
+            await wait_msg.edit_text(f"✅ {message}\n\n📝 Введите 5-значный код из Telegram:", parse_mode="HTML")
+        else:
+            await wait_msg.edit_text(f"❌ {message}")
+            await state.clear()
+            
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await state.clear()
 
 @dp.message(Form.add_code)
 async def add_code(m: Message, state: FSMContext):
@@ -689,7 +531,6 @@ async def add_code(m: Message, state: FSMContext):
     await m.answer("⏳ Проверка кода...")
     
     try:
-        # Проверяем код
         result, message = await verify_code(phone, code)
         
         if result:
@@ -742,13 +583,7 @@ async def add_name(m: Message, state: FSMContext):
     await state.update_data(name=name)
     await state.set_state(Form.add_price)
     
-    await m.answer(
-        f"💰 <b>Введите цену в звездах</b>\n\n"
-        f"Аккаунт: {name}\n"
-        f"1 звезда = {STAR_TO_RUB} ₽\n\n"
-        f"Пример: 50",
-        parse_mode="HTML"
-    )
+    await m.answer(f"💰 <b>Введите цену в звездах</b>\n\nАккаунт: {name}\n1 звезда = {STAR_TO_RUB} ₽\n\nПример: 50", parse_mode="HTML")
 
 @dp.message(Form.add_price)
 async def add_price(m: Message, state: FSMContext):
@@ -763,12 +598,7 @@ async def add_price(m: Message, state: FSMContext):
     await state.update_data(price=price)
     await state.set_state(Form.add_description)
     
-    await m.answer(
-        f"📝 <b>Введите описание аккаунта</b>\n\n"
-        f"Цена: {price} звезд\n\n"
-        f"Опишите аккаунт (можно пропустить, отправьте '-'):",
-        parse_mode="HTML"
-    )
+    await m.answer(f"📝 <b>Введите описание аккаунта</b>\n\nЦена: {price} звезд\n\nОпишите аккаунт (можно пропустить, отправьте '-'):", parse_mode="HTML")
 
 @dp.message(Form.add_description)
 async def add_description(m: Message, state: FSMContext):
@@ -782,9 +612,7 @@ async def add_description(m: Message, state: FSMContext):
     price = data.get('price')
     country_id = data.get('country_id')
     
-    # Сохраняем аккаунт в БД
     try:
-        # Получаем путь к сессии
         path = session_path(phone)
         
         await db.add_account(
@@ -796,7 +624,6 @@ async def add_description(m: Message, state: FSMContext):
             session_path=path
         )
         
-        # Запускаем прослушку
         try:
             await start_listening(phone)
         except Exception as e:
@@ -804,20 +631,10 @@ async def add_description(m: Message, state: FSMContext):
         
         await state.clear()
         
-        await m.answer(
-            f"✅ <b>Аккаунт добавлен!</b>\n\n"
-            f"📱 Название: {name}\n"
-            f"📞 Телефон: {phone}\n"
-            f"⭐ Цена: {price} звезд\n"
-            f"📝 Описание: {description or 'Нет'}\n\n"
-            f"Аккаунт появился в магазине!",
-            parse_mode="HTML"
-        )
+        await m.answer(f"✅ <b>Аккаунт добавлен!</b>\n\n📱 Название: {name}\n📞 Телефон: {phone}\n⭐ Цена: {price} звезд\n📝 Описание: {description or 'Нет'}\n\nАккаунт появился в магазине!", parse_mode="HTML")
         
     except Exception as e:
         await m.answer(f"❌ Ошибка сохранения: {str(e)}")
-
-# ---------- БАЛАНС ----------
 
 @dp.callback_query(F.data == "a_balance")
 async def a_balance(c: CallbackQuery, state: FSMContext):
@@ -846,8 +663,6 @@ async def balance_amount(m: Message, state: FSMContext):
     await state.clear()
     await m.answer("✅ Баланс изменён." if ok else "❌ Пользователь не найден.", reply_markup=admin_kb())
 
-# ---------- БЛОКИРОВКА ----------
-
 @dp.callback_query(F.data == "a_block")
 async def a_block(c: CallbackQuery, state: FSMContext):
     if not admin(c.from_user.id): return
@@ -864,22 +679,11 @@ async def block_user(m: Message, state: FSMContext):
     await state.clear()
     await m.answer("✅ Готово.", reply_markup=admin_kb())
 
-# ---------- СТАТИСТИКА ----------
-
 @dp.callback_query(F.data == "a_stats")
 async def a_stats(c: CallbackQuery):
     if not admin(c.from_user.id): return
     s = await db.stats()
-    await c.message.answer(
-        f"📊 <b>Статистика</b>\n\n"
-        f"👤 Пользователи: {s['users']}\n"
-        f"📱 Аккаунты: {s['accounts']}\n"
-        f"🟢 В продаже: {s['available']}\n"
-        f"🧾 Покупки: {s['purchases']}\n"
-        f"⭐ Оборот: {int(s['revenue'])} звезд\n"
-        f"💰 Эквивалент: {int(s['revenue']) * STAR_TO_RUB} ₽",
-        parse_mode="HTML"
-    )
+    await c.message.answer(f"📊 <b>Статистика</b>\n\n👤 Пользователи: {s['users']}\n📱 Аккаунты: {s['accounts']}\n🟢 В продаже: {s['available']}\n🧾 Покупки: {s['purchases']}\n⭐ Оборот: {int(s['revenue'])} звезд\n💰 Эквивалент: {int(s['revenue']) * STAR_TO_RUB} ₽", parse_mode="HTML")
     await c.answer()
 
 # ============== ЗАПУСК ==============
