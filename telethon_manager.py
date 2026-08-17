@@ -1,11 +1,12 @@
 import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 import re
 import logging
 
 from telethon import TelegramClient, events
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from config import TELEGRAM_API_ID, TELEGRAM_API_HASH, SESSIONS_DIR
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ Path(SESSIONS_DIR).mkdir(exist_ok=True)
 clients: Dict[str, TelegramClient] = {}
 captured_codes: Dict[str, Dict] = {}
 listening_tasks: Dict[str, asyncio.Task] = {}
+pending_auth: Dict[str, Dict] = {}
 
 def session_path(phone: str) -> str:
     clean = phone.replace("+","").replace(" ","")
@@ -54,6 +56,83 @@ async def is_authorized(phone: str) -> bool:
     if not client:
         client = await connect_session(phone)
     return await client.is_user_authorized()
+
+async def request_code(phone: str) -> bool:
+    """Отправляет код подтверждения"""
+    try:
+        client = clients.get(phone)
+        if not client:
+            client = await connect_session(phone)
+        
+        if await client.is_user_authorized():
+            return True
+        
+        result = await client.send_code_request(phone)
+        pending_auth[phone] = {
+            'client': client,
+            'phone_code_hash': result.phone_code_hash,
+            'created_at': datetime.now()
+        }
+        return True
+        
+    except FloodWaitError as e:
+        logger.error(f"Flood wait: {e.seconds}s")
+        return False
+    except Exception as e:
+        logger.error(f"Request code error: {e}")
+        return False
+
+async def verify_code(phone: str, code: str) -> Tuple[bool, str]:
+    """Проверяет код подтверждения"""
+    if phone not in pending_auth:
+        return False, "Нет ожидающего кода"
+    
+    try:
+        auth_data = pending_auth[phone]
+        client = auth_data['client']
+        phone_code_hash = auth_data['phone_code_hash']
+        
+        try:
+            await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+            del pending_auth[phone]
+            
+            me = await client.get_me()
+            logger.info(f"✅ Вход выполнен для {phone}: {me.first_name}")
+            
+            # Запускаем прослушку
+            await start_listening(phone)
+            
+            return True, f"Вход выполнен! {me.first_name}"
+            
+        except SessionPasswordNeededError:
+            return False, "2FA_REQUIRED"
+            
+    except Exception as e:
+        logger.error(f"Verify code error: {e}")
+        return False, str(e)
+
+async def verify_2fa(phone: str, password: str) -> Tuple[bool, str]:
+    """Проверяет 2FA пароль"""
+    if phone not in pending_auth:
+        return False, "Нет ожидающей сессии"
+    
+    try:
+        auth_data = pending_auth[phone]
+        client = auth_data['client']
+        
+        await client.sign_in(password=password)
+        del pending_auth[phone]
+        
+        me = await client.get_me()
+        logger.info(f"✅ 2FA пройдена для {phone}: {me.first_name}")
+        
+        await start_listening(phone)
+        
+        return True, f"Вход выполнен! {me.first_name}"
+        
+    except Exception as e:
+        logger.error(f"2FA error: {e}")
+        return False, str(e)
 
 async def start_listening(phone: str):
     if phone in listening_tasks:
