@@ -1,14 +1,20 @@
 import os
+from pathlib import Path
 
-BOT_TOKEN = "8942014522:AAEN3Iw6FkdiRCuq-ax4Bx2KckY2WFzbH54"
-ADMIN_IDS = {5504715265}
-TELEGRAM_API_ID = 39813941
-TELEGRAM_API_HASH = "6aa1f649d2a6b3a308bc27aed9e6de29"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_BOT_TOKEN_HERE")
+ADMIN_IDS = {123456789}
+TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", 123456))
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "PASTE_API_HASH_HERE")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-SESSIONS_DIR = "sessions"
-CURRENCY = "⭐"  # Меняем на звезды
-SHOP_NAME = "Dolphy shop"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://USER:PASSWORD@HOST:5432/DATABASE")
+SESSIONS_DIR = os.getenv("SESSIONS_DIR", "sessions")
+CURRENCY = os.getenv("CURRENCY", "⭐")
+SHOP_NAME = os.getenv("SHOP_NAME", "Dolphy Shop")
 
-# Курс: 1 звезда = X рублей (можно менять)
-STAR_TO_RUB = 2  # 1 звезда = 10 рублей
+# Криптобот настройки
+CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN", "PASTE_CRYPTOBOT_TOKEN_HERE")
+
+# 1 звезда = 1 рубль
+STAR_TO_RUB = 1
+
+Path(SESSIONS_DIR).mkdir(exist_ok=True)
