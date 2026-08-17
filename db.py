@@ -87,9 +87,15 @@ async def init_db():
         await c.execute("CREATE INDEX IF NOT EXISTS idx_accounts_country_id ON accounts(country_id);")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_accounts_phone ON accounts(phone);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_accounts_sold_to ON accounts(sold_to);")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_purchases_user_id ON purchases(user_id);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_purchases_account_id ON purchases(account_id);")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);")
         await c.execute("CREATE INDEX IF NOT EXISTS idx_sessions_phone ON sessions(phone);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_sessions_is_active ON sessions(is_active);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_captured_codes_account_id ON captured_codes(account_id);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_captured_codes_expires_at ON captured_codes(expires_at);")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);")
 
 async def ensure_user(tg_id, username):
     async with pool.acquire() as c:
